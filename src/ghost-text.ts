@@ -2,7 +2,7 @@ import { EditorSelection, EditorState, Prec, StateEffect, StateField, Transactio
 import { isolateHistory } from "@codemirror/commands";
 import { Decoration, DecorationSet, EditorView, keymap, WidgetType } from "@codemirror/view";
 
-interface Suggestion { readonly at: number; readonly text: string }
+import { Suggestion, createSuggestion } from "./suggestion";
 interface GhostState { readonly suggestion: Suggestion | null; readonly decorations: DecorationSet }
 const empty: GhostState = { suggestion: null, decorations: Decoration.none };
 const show = StateEffect.define<{ source: EditorState; text: string }>();
@@ -38,15 +38,7 @@ export const ghostField = StateField.define<GhostState>({
     for (const effect of tr.effects) {
       if (effect.is(dismiss)) suggestion = null;
       if (effect.is(show) && effect.value.source === tr.startState && !tr.docChanged && !tr.selection) {
-        const selection = tr.state.selection;
-        if (selection.ranges.length === 1 && selection.main.empty) {
-          const text = effect.value.text.replace(/\r\n?/g, "\n");
-          // Bound widget layout work, even if a future provider misbehaves.
-          const safePlacement = !text.includes("\n") ||
-            tr.state.doc.lineAt(selection.main.head).to === selection.main.head;
-          suggestion = safePlacement && text.length > 0 && text.length <= 10000
-            ? { at: selection.main.head, text } : null;
-        }
+        suggestion = createSuggestion(tr.state, effect.value.text);
       }
       if (effect.is(remaining) && effect.value.source === tr.startState &&
           effect.value.doc.eq(tr.newDoc)) suggestion = effect.value.suggestion;
