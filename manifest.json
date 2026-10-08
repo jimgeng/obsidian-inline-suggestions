@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-inline-suggestions",
+  "name": "Inline Suggestions",
+  "version": "0.1.0",
+  "minAppVersion": "1.13.0",
+  "description": "Inline Markdown suggestions for Obsidian.",
+  "author": "",
+  "isDesktopOnly": false
+}

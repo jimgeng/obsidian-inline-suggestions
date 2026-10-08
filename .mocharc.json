@@ -1,0 +1,6 @@
+{
+  "import": "tsx",
+  "extension": ["ts"],
+  "spec": "tests/**/*.test.ts",
+  "watch-files": ["src/**/*.ts", "tests/**/*.ts", "manifest.json", "package.json"]
+}
