@@ -14,20 +14,6 @@ Why six:
 - Typed-through reuse changes the existing conservative ghost-text invalidation policy, so it deserves its own slice rather than being mixed into initial networking.
 - Advanced caching, similar-note retrieval, progressive rendering, and a generic provider framework are not necessary for this goal.
 
-## Inspection baseline
-
-Inspected `how-vscode-does-it.md`, `README.md`, `STATUS.md`, `AGENTS.md`, all current `src/` and test files, package/build configuration, manifest, and working-tree changes.
-
-Current working tree already contains user changes:
-
-- Modified `src/main.ts` and `STATUS.md`.
-- Untracked `src/completion-provider.ts`, `src/fake-provider.ts`, and `how-vscode-does-it.md`.
-- Deleted `tests/manifest.test.ts`.
-
-Plan against those current files, not just committed HEAD. Preserve these changes; restoring the deleted manifest test or unrelated cleanup is outside this work.
-
-Verified baseline: `npm run typecheck` passes and `npm test` passes **23 tests**. No actual Obsidian or live Copilot requests were tested. The reference describes upstream behavior; exact current endpoint, model, credentials, permissions, and runtime compatibility have not been independently verified here.
-
 ### What exists
 
 | Component | Current behavior | Consequence for fetching |

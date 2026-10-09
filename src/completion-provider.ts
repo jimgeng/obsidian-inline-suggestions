@@ -6,5 +6,5 @@ export interface CompletionContext {
 
 export interface CompletionProvider {
   /** Return insertion text, or null when there is no completion. */
-  complete(context: CompletionContext): Promise<string | null>;
+  complete(context: CompletionContext, signal: AbortSignal): Promise<string | null>;
 }

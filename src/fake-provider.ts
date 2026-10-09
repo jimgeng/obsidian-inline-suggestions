@@ -4,7 +4,7 @@ import { CompletionContext, CompletionProvider } from "./completion-provider";
 export class FakeCompletionProvider implements CompletionProvider {
   constructor(private readonly text: string | null = " suggested text to try.\nA second suggested line.") {}
 
-  async complete(_context: CompletionContext): Promise<string | null> {
+  async complete(_context: CompletionContext, _signal: AbortSignal): Promise<string | null> {
     return this.text;
   }
 }

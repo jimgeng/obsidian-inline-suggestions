@@ -31,7 +31,7 @@ export default class InlineSuggestionsPlugin extends Plugin {
           const text = await this.completionProvider.complete({
             prefix: source.doc.sliceString(0, at),
             suffix: source.doc.sliceString(at),
-          });
+          }, new AbortController().signal);
           if (text !== null) showGhost(view, source, text);
         } catch {
           // Provider failures must not interfere with normal editing.
