@@ -8,7 +8,6 @@ const empty: GhostState = { suggestion: null, decorations: Decoration.none };
 const show = StateEffect.define<{ source: EditorState; text: string }>();
 const remaining = StateEffect.define<{ source: EditorState; doc: EditorState["doc"]; suggestion: Suggestion }>();
 const dismiss = StateEffect.define<null>();
-
 class GhostWidget extends WidgetType {
   constructor(readonly text: string) { super(); }
   eq(other: GhostWidget): boolean { return other.text === this.text; }
@@ -60,8 +59,13 @@ export function showGhost(view: EditorView, source: EditorState, text: string): 
 
 export function dismissGhost(view: EditorView): boolean {
   if (!view.state.field(ghostField, false)?.suggestion) return false;
-  view.dispatch({ effects: dismiss.of(null) });
+  view.dispatch({ effects: dismiss.of(null), annotations: Transaction.userEvent.of("input.dismiss") });
   return true;
+}
+
+/** True for Escape even when no visible suggestion exists. */
+export function isGhostDismissal(tr: Transaction): boolean {
+  return tr.effects.some(effect => effect.is(dismiss)) || tr.annotation(Transaction.userEvent) === "input.dismiss";
 }
 
 export function nextWordLength(text: string): number {
@@ -99,7 +103,6 @@ export const ghostTextExtension = [
   Prec.high(keymap.of([
     { key: "Tab", run: view => acceptGhost(view) },
     { key: "Mod-ArrowRight", run: view => acceptGhost(view, true) },
-    { key: "Escape", run: dismissGhost },
   ])),
   EditorView.domEventHandlers({
     blur: (_event, view) => { dismissGhost(view); },

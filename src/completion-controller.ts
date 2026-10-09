@@ -66,9 +66,11 @@ export class CompletionController<Owner extends object = object> {
     }, this.debounceMs);
   }
 
-  cancel(owner: Owner): void {
+  cancel(owner: Owner): boolean {
     const entry = this.requests.get(owner);
-    if (entry) this.finish(owner, entry, { status: "cancelled" });
+    if (!entry) return false;
+    this.finish(owner, entry, { status: "cancelled" });
+    return true;
   }
 
   dispose(): void {
