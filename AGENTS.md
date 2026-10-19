@@ -39,4 +39,4 @@ Work is tracked as GitHub issues in `jimgeng/obsidian-inline-suggestions`, on th
 
 ## Extra Vital Context
 
-- Copilot access goes through GitHub's official `@github/copilot-language-server` (installed globally with npm, run with the user's Node over stdio), which owns sign-in and tokens. The plugin is desktop-only. This supersedes slices 3–5 of `completion-fetch-implementation-plan.md`; do not implement direct HTTP calls to Copilot endpoints or custom OAuth.
+- Copilot access goes through GitHub's official `@github/copilot-language-server` (installed globally with npm, run with the user's Node over stdio), which owns sign-in and tokens. The plugin is desktop-only. Do not implement direct HTTP calls to Copilot endpoints or custom OAuth.
