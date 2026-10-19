@@ -1,0 +1,27 @@
+{
+  "serverVersion": "1.555.2",
+  "languageId": "markdown",
+  "document": "# Recipe\n\nIngredients:\n",
+  "request": {
+    "textDocument": { "uri": "file:///scratch/sample.md", "version": 5 },
+    "position": { "line": 3, "character": 0 },
+    "context": { "triggerKind": 2 },
+    "formattingOptions": { "tabSize": 2, "insertSpaces": true }
+  },
+  "response": {
+    "items": [
+      {
+        "command": {
+          "title": "Completion Accepted",
+          "command": "github.copilot.didAcceptCompletionItem",
+          "arguments": ["<completion-id>"]
+        },
+        "insertText": "- 2 cups of flour",
+        "range": {
+          "start": { "line": 3, "character": 0 },
+          "end": { "line": 3, "character": 0 }
+        }
+      }
+    ]
+  }
+}

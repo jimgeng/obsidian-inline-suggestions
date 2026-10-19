@@ -1,0 +1,27 @@
+{
+  "serverVersion": "1.555.2",
+  "languageId": "markdown",
+  "document": "# A simple list\n- A note about ",
+  "request": {
+    "textDocument": { "uri": "file:///scratch/sample.md", "version": 3 },
+    "position": { "line": 1, "character": 15 },
+    "context": { "triggerKind": 2 },
+    "formattingOptions": { "tabSize": 2, "insertSpaces": true }
+  },
+  "response": {
+    "items": [
+      {
+        "command": {
+          "title": "Completion Accepted",
+          "command": "github.copilot.didAcceptCompletionItem",
+          "arguments": ["<completion-id>"]
+        },
+        "insertText": "- A note about something important.",
+        "range": {
+          "start": { "line": 1, "character": 0 },
+          "end": { "line": 1, "character": 15 }
+        }
+      }
+    ]
+  }
+}
