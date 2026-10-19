@@ -1,0 +1,12 @@
+{
+  "serverVersion": "1.555.2",
+  "languageId": "markdown",
+  "document": "# Synthetic note\n\nA short observation about ordinary objects.\n\nThe next sentence might begins here.\n",
+  "request": {
+    "textDocument": { "uri": "file:///scratch/sample.md", "version": 2 },
+    "position": { "line": 4, "character": 23 },
+    "context": { "triggerKind": 2 },
+    "formattingOptions": { "tabSize": 2, "insertSpaces": true }
+  },
+  "response": { "items": [] }
+}
