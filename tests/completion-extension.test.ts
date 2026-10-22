@@ -61,6 +61,49 @@ describe("automatic completion extension", () => {
     assert.equal(calls, 1);
     assert.equal(view.state.field(ghostField).suggestion?.text, " world");
   });
+  it("reuses matching typing without requests, including full consumption, then requests on new input", async () => {
+    let calls = 0;
+    const view = create({ complete: async () => { calls++; return "a😀\nend"; } });
+    type(view, "!"); await wait(); assert.equal(calls, 1);
+    type(view, "a");
+    assert.deepEqual(view.state.field(ghostField).suggestion, { at: 7, text: "😀\nend" });
+    await wait(); assert.equal(calls, 1);
+    type(view, "😀\n");
+    assert.deepEqual(view.state.field(ghostField).suggestion, { at: 10, text: "end" });
+    type(view, "end"); assert.equal(view.state.field(ghostField).suggestion, null);
+    await wait(); assert.equal(calls, 1);
+    type(view, "?"); await wait(); assert.equal(calls, 2);
+  });
+  it("invalidates a mismatch and requests a fresh completion only when eligible", async () => {
+    let calls = 0;
+    const view = create({ complete: async () => { calls++; return "abc"; } });
+    showGhost(view, view.state, "abc"); type(view, "z");
+    assert.equal(view.state.field(ghostField).suggestion, null);
+    await wait(); assert.equal(calls, 1);
+    type(view, "z"); view.dispatch({ selection: { anchor: 0 } });
+    await wait(); assert.equal(calls, 1);
+  });
+  it("does not rebase in-flight results even when later typing matches their prefix", async () => {
+    const requests: { resolve: (text: string) => void; signal: AbortSignal }[] = [];
+    const view = create({ complete: (_context, signal) => new Promise<string>(resolve => requests.push({ resolve, signal })) });
+    type(view, "!"); await wait();
+    type(view, "a"); assert.equal(requests[0]!.signal.aborted, true);
+    requests[0]!.resolve("abc"); await nextTick();
+    assert.equal(view.state.field(ghostField).suggestion, null);
+    await wait(); requests[1]!.resolve("fresh"); await nextTick();
+    assert.equal(view.state.field(ghostField).suggestion?.text, "fresh");
+  });
+  for (const event of [undefined, "input.paste", "undo", "redo"]) {
+    it(`does not request after invalidating a matching ${event ?? "programmatic"} edit`, async () => {
+      let calls = 0;
+      const view = create({ complete: async () => { calls++; return "abc"; } });
+      showGhost(view, view.state, "abc");
+      view.dispatch({ changes: { from: 5, insert: "a" }, selection: { anchor: 6 },
+        annotations: event ? Transaction.userEvent.of(event) : [] });
+      assert.equal(view.state.field(ghostField).suggestion, null);
+      await wait(); assert.equal(calls, 0);
+    });
+  }
   it("cancels on Escape even when no ghost is visible and ignores a late response", async () => {
     let resolve!: (text: string) => void;
     let signal!: AbortSignal;

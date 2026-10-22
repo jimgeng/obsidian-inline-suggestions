@@ -3,7 +3,7 @@ import { EditorView, keymap, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { CompletionController } from "./completion-controller";
 import { createCompletionContext } from "./completion-context";
 import { CompletionProvider } from "./completion-provider";
-import { dismissGhost, ghostField, isGhostDismissal, showGhost } from "./ghost-text";
+import { dismissGhost, ghostField, isGhostDismissal, showGhost, typedThroughGhost } from "./ghost-text";
 
 interface EditorProvider extends CompletionProvider { close?(): Promise<void> }
 interface Options {
@@ -82,7 +82,8 @@ class AutomaticCompletion {
       // CM6 marks committed composition input as input.type.compose[.start].
       // Never treat input.complete as typing: it includes our own ghost acceptance.
       if (event === "input.type" || event?.startsWith("input.type.compose")) {
-        this.schedule();
+        // Full consumption also waits for the next qualifying input; do not chain requests.
+        if (!typedThroughGhost(tr)) this.schedule();
       } else {
         this.cancel();
       }

@@ -29,11 +29,36 @@ function render(suggestion: Suggestion | null): GhostState {
   ]) };
 }
 
+/** Only reuse a displayed proposal for a single, ordinary insertion in the final transaction. */
+export function typedThroughGhost(tr: Transaction): Suggestion | null {
+  const suggestion = tr.startState.field(ghostField, false)?.suggestion;
+  if (!suggestion || !tr.docChanged || tr.annotation(Transaction.userEvent) !== "input.type" ||
+      tr.startState.readOnly || tr.state.readOnly) return null;
+  const before = tr.startState.selection;
+  const after = tr.state.selection;
+  if (before.ranges.length !== 1 || !before.main.empty || before.main.head !== suggestion.at ||
+      after.ranges.length !== 1 || !after.main.empty) return null;
+  let count = 0;
+  let inserted = "";
+  let valid = true;
+  tr.changes.iterChanges((from, to, _fromB, _toB, text) => {
+    count++;
+    if (from !== suggestion.at || to !== from || !text.length) valid = false;
+    inserted = text.toString();
+  }, true);
+  if (!valid || count !== 1 || !suggestion.text.startsWith(inserted) ||
+      after.main.head !== suggestion.at + inserted.length) return null;
+  const text = suggestion.text.slice(inserted.length);
+  // An empty remainder still signals successful consumption to request scheduling.
+  return text ? createSuggestion(tr.state, text) : { at: after.main.head, text: "" };
+}
+
 export const ghostField = StateField.define<GhostState>({
   create: () => empty,
   update(value, tr) {
-    // Never map a proposal onto edited content: conservative invalidation is safer.
-    let suggestion = tr.docChanged || tr.selection ? null : value.suggestion;
+    // Reuse only a displayed prefix match, never an asynchronous proposal on edited content.
+    const consumed = typedThroughGhost(tr);
+    let suggestion = consumed ?? (tr.docChanged || tr.selection ? null : value.suggestion);
     for (const effect of tr.effects) {
       if (effect.is(dismiss)) suggestion = null;
       if (effect.is(show) && effect.value.source === tr.startState && !tr.docChanged && !tr.selection) {
