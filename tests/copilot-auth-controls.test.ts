@@ -3,6 +3,8 @@ import { JSDOM } from "jsdom";
 import { describe, it } from "mocha";
 import type { AuthState } from "../src/copilot/auth";
 import { bindAuthSettings, bindAuthStatusBar } from "../src/copilot/auth-controls";
+import { PluginSettingsStore } from "../src/plugin-settings";
+import { createSetting } from "./helpers/setting";
 
 function fixture(initial: Partial<AuthState> = {}) {
   const dom = new JSDOM("<div id='bar'></div><div id='settings'></div>");
@@ -20,6 +22,7 @@ function fixture(initial: Partial<AuthState> = {}) {
   };
   return {
     dom, auth, calls, listeners,
+    preferences: new PluginSettingsStore({}, async () => {}, error => { throw error; }),
     bar: dom.window.document.getElementById("bar")!,
     settings: dom.window.document.getElementById("settings")!,
     update(patch: Partial<AuthState>) { state = { ...state, ...patch }; for (const listener of listeners) listener(state); },
@@ -29,7 +32,7 @@ function fixture(initial: Partial<AuthState> = {}) {
 describe("Copilot authentication controls", () => {
   it("offers mouse and keyboard sign-in from the signed-out status bar", () => {
     const f = fixture({ authentication: "signed-out", status: { kind: "Error", busy: false } });
-    const dispose = bindAuthStatusBar(f.bar, f.auth);
+    const dispose = bindAuthStatusBar(f.bar, f.auth, f.preferences);
     assert.equal(f.bar.textContent, "Copilot: signed out");
     assert.equal(f.bar.getAttribute("role"), "button");
     assert.equal(f.bar.tabIndex, 0);
@@ -43,10 +46,9 @@ describe("Copilot authentication controls", () => {
 
   it("does not launch sign-in when signed in, unknown, unavailable or pending", () => {
     const f = fixture({ authentication: "signed-in", status: { kind: "Warning", busy: true } });
-    const dispose = bindAuthStatusBar(f.bar, f.auth);
+    const dispose = bindAuthStatusBar(f.bar, f.auth, f.preferences);
     assert.equal(f.bar.textContent, "Copilot: warning (busy)");
     for (const patch of [
-      { authentication: "signed-in" as const },
       { authentication: "unknown" as const },
       { authentication: "signed-out" as const, pending: true },
       { pending: false, available: false },
@@ -60,11 +62,41 @@ describe("Copilot authentication controls", () => {
     dispose(); f.dom.window.close();
   });
 
+  it("toggles signed-in suggestions by mouse/keyboard and reflects changes from settings", async () => {
+    const f = fixture({ authentication: "signed-in", status: { kind: "Normal", busy: false } });
+    const dispose = bindAuthStatusBar(f.bar, f.auth, f.preferences);
+    assert.equal(f.bar.getAttribute("role"), "button");
+    assert.equal(f.bar.getAttribute("aria-pressed"), "true");
+    f.bar.click();
+    assert.equal(f.preferences.current.automaticSuggestions, false);
+    assert.equal(f.bar.textContent, "Copilot: off");
+    assert.equal(f.bar.getAttribute("aria-pressed"), "false");
+    assert.match(f.bar.title, /turn on automatic suggestions/);
+    f.bar.dispatchEvent(new f.dom.window.KeyboardEvent("keydown", { key: "Enter" }));
+    assert.equal(f.bar.textContent, "Copilot: normal");
+    f.bar.dispatchEvent(new f.dom.window.KeyboardEvent("keydown", { key: " " }));
+    assert.equal(f.bar.textContent, "Copilot: off");
+    await f.preferences.setAutomaticSuggestions(true);
+    assert.equal(f.bar.textContent, "Copilot: normal");
+    // Disabling is a local preference even if service health is degraded.
+    f.update({ available: false, status: { kind: "Error", busy: false } });
+    f.bar.click();
+    assert.equal(f.bar.textContent, "Copilot: off");
+    f.update({ authentication: "signed-out", available: true });
+    f.bar.click();
+    assert.deepEqual(f.calls, ["signIn"]);
+    assert.equal(f.preferences.current.automaticSuggestions, false);
+    dispose();
+    await f.preferences.setAutomaticSuggestions(true);
+    assert.equal(f.bar.textContent, "Copilot: signed out");
+    f.dom.window.close();
+  });
+
   it("keeps settings and the status bar synchronized with relevant actions", () => {
     const f = fixture({ authentication: "signed-out", status: { kind: "Error", busy: false, requiresSignIn: true } });
-    const disposeBar = bindAuthStatusBar(f.bar, f.auth);
-    const disposeSettings = bindAuthSettings(f.settings, f.auth);
-    assert.equal(f.settings.querySelector("h2")?.textContent, "Copilot authentication");
+    const disposeBar = bindAuthStatusBar(f.bar, f.auth, f.preferences);
+    const disposeSettings = bindAuthSettings(f.settings, f.auth, createSetting);
+    assert.equal(f.settings.querySelector("[data-heading]")?.textContent, "Copilot authentication");
     const signIn = f.settings.querySelector("button")!;
     const status = f.settings.querySelector("[role=status]")!;
     assert.equal(status.textContent, "Signed out. Sign in to use Copilot.");
@@ -95,7 +127,7 @@ describe("Copilot authentication controls", () => {
     const style = f.dom.window.document.createElement("style");
     style.textContent = "button { display: inline-flex; }";
     f.dom.window.document.head.append(style);
-    const dispose = bindAuthSettings(f.settings, f.auth);
+    const dispose = bindAuthSettings(f.settings, f.auth, createSetting);
     const labels = () => Array.from(f.settings.querySelectorAll("button"), button => button.textContent);
     assert.match(f.settings.textContent!, /Authentication status unknown — Copilot access problem/);
     assert.deepEqual(labels(), []);
@@ -126,7 +158,7 @@ describe("Copilot authentication controls", () => {
 
   it("distinguishes server health from authentication and activity", () => {
     const f = fixture({ authentication: "signed-out" });
-    const dispose = bindAuthSettings(f.settings, f.auth);
+    const dispose = bindAuthSettings(f.settings, f.auth, createSetting);
     const status = f.settings.querySelector("[role=status]")!;
     for (const authentication of ["signed-out", "signed-in", "unknown"] as const) {
       f.update({ authentication, status: { kind: "Error", busy: false, requiresSignIn: true } });
@@ -149,8 +181,8 @@ describe("Copilot authentication controls", () => {
 
   it("disposes subscriptions and event handlers when hidden or unloaded", () => {
     const f = fixture({ authentication: "signed-out" });
-    const disposeBar = bindAuthStatusBar(f.bar, f.auth);
-    const disposeSettings = bindAuthSettings(f.settings, f.auth);
+    const disposeBar = bindAuthStatusBar(f.bar, f.auth, f.preferences);
+    const disposeSettings = bindAuthSettings(f.settings, f.auth, createSetting);
     const signIn = f.settings.querySelector("button")!;
     f.update({ authentication: "signed-in" });
     const signOut = f.settings.querySelector("button")!;
@@ -165,7 +197,7 @@ describe("Copilot authentication controls", () => {
     f.bar.click(); signIn.click(); signOut.click();
     assert.deepEqual(f.calls, []);
     // Reopening settings creates a single fresh section reflecting the latest state.
-    const disposeAgain = bindAuthSettings(f.settings, f.auth);
+    const disposeAgain = bindAuthSettings(f.settings, f.auth, createSetting);
     assert.equal(f.listeners.size, 1);
     assert.match(f.settings.textContent!, /Signed in/);
     disposeAgain(); f.dom.window.close();

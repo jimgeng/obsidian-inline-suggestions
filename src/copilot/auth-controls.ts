@@ -1,3 +1,5 @@
+import type { Setting } from "obsidian";
+import type { PluginSettingsStore } from "../plugin-settings";
 import type { AuthState, CopilotAuth } from "./auth";
 
 type Controls = Pick<CopilotAuth, "state" | "subscribe" | "signIn" | "signOut">;
@@ -25,68 +27,72 @@ function description(state: AuthState): string {
 }
 
 /** Returns a disposer so the plugin owns listeners and subscriptions. */
-export function bindAuthStatusBar(element: HTMLElement, auth: Controls): () => void {
-  const signIn = () => {
+export function bindAuthStatusBar(element: HTMLElement, auth: Controls, settings: PluginSettingsStore): () => void {
+  const activate = () => {
     const state = auth.state;
-    if (state.available && !state.pending && state.authentication === "signed-out") void auth.signIn();
+    if (state.authentication === "signed-in") {
+      void settings.setAutomaticSuggestions(!settings.current.automaticSuggestions);
+    } else if (state.available && !state.pending && state.authentication === "signed-out") {
+      void auth.signIn();
+    }
   };
   const keydown = (event: KeyboardEvent) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      signIn();
+      activate();
     }
   };
-  element.addEventListener("click", signIn);
+  element.addEventListener("click", activate);
   element.addEventListener("keydown", keydown);
-  const unsubscribe = auth.subscribe(state => {
-    const clickable = state.available && !state.pending && state.authentication === "signed-out";
-    const label = state.authentication === "signed-out" ? "signed out" : state.status?.kind.toLowerCase() ?? "unavailable";
-    element.textContent = `Copilot: ${label}${state.status?.busy || state.pending ? " (busy)" : ""}`;
-    element.title = `${description(state)}${clickable ? ". Click to sign in." : ""}`;
+  const render = () => {
+    const state = auth.state;
+    const signedIn = state.authentication === "signed-in";
+    const clickable = signedIn || (state.available && !state.pending && state.authentication === "signed-out");
+    const off = signedIn && !settings.current.automaticSuggestions;
+    const label = state.authentication === "signed-out" ? "signed out" : off ? "off" : state.status?.kind.toLowerCase() ?? "unavailable";
+    const action = signedIn ? `Turn ${off ? "on" : "off"} automatic suggestions` : "Sign in to Copilot";
+    element.textContent = `Copilot: ${label}${!off && (state.status?.busy || state.pending) ? " (busy)" : ""}`;
+    element.title = `${description(state)}${clickable ? `. Click to ${action.toLowerCase()}.` : ""}`;
     element.classList.toggle("mod-clickable", clickable);
     if (clickable) {
       element.setAttribute("role", "button");
       element.tabIndex = 0;
-      element.setAttribute("aria-label", "Copilot: signed out. Sign in to Copilot");
+      element.setAttribute("aria-label", `Copilot: ${label}. ${action}`);
+      if (signedIn) element.setAttribute("aria-pressed", String(settings.current.automaticSuggestions));
+      else element.removeAttribute("aria-pressed");
     } else {
       element.removeAttribute("role");
       element.removeAttribute("tabindex");
       element.removeAttribute("aria-label");
+      element.removeAttribute("aria-pressed");
     }
-  });
+  };
+  const unsubscribe = auth.subscribe(render);
+  const unsubscribeSettings = settings.subscribe(render);
   return () => {
     unsubscribe();
-    element.removeEventListener("click", signIn);
+    unsubscribeSettings();
+    element.removeEventListener("click", activate);
     element.removeEventListener("keydown", keydown);
   };
 }
 
-export function bindAuthSettings(container: HTMLElement, auth: Controls): () => void {
-  const document = container.ownerDocument;
-  const heading = document.createElement("h2");
-  heading.textContent = "Copilot authentication";
-  const row = document.createElement("div");
-  row.className = "setting-item";
-  const info = row.appendChild(document.createElement("div"));
-  info.className = "setting-item-info";
-  const name = info.appendChild(document.createElement("div"));
-  name.className = "setting-item-name";
-  name.textContent = "Authentication status";
-  const status = info.appendChild(document.createElement("div"));
-  status.className = "setting-item-description";
+export function bindAuthSettings(container: HTMLElement, auth: Controls,
+  createSetting: (container: HTMLElement) => Setting): () => void {
+  const heading = createSetting(container).setName("Copilot authentication").setHeading();
+  const row = createSetting(container).setName("Authentication status");
+  const status = row.descEl;
   status.setAttribute("role", "status");
-  const controls = row.appendChild(document.createElement("div"));
-  controls.className = "setting-item-control";
-  const signIn = document.createElement("button");
-  signIn.textContent = "Sign in";
-  signIn.className = "mod-cta";
-  const signOut = document.createElement("button");
-  signOut.textContent = "Sign out";
-  const onSignIn = () => { void auth.signIn(); };
-  const onSignOut = () => { void auth.signOut(); };
-  signIn.addEventListener("click", onSignIn);
-  signOut.addEventListener("click", onSignOut);
-  container.append(heading, row);
+  const controls = row.controlEl;
+  let active = true;
+  let signIn!: HTMLButtonElement;
+  let signOut!: HTMLButtonElement;
+  row.addButton(button => {
+    signIn = button.setButtonText("Sign in").setCta().onClick(() => { if (active) void auth.signIn(); }).buttonEl;
+  });
+  row.addButton(button => {
+    signOut = button.setButtonText("Sign out").onClick(() => { if (active) void auth.signOut(); }).buttonEl;
+  });
   const unsubscribe = auth.subscribe(state => {
     status.textContent = description(state);
     signIn.disabled = signOut.disabled = !state.available || state.pending;
@@ -100,9 +106,8 @@ export function bindAuthSettings(container: HTMLElement, auth: Controls): () => 
   });
   return () => {
     unsubscribe();
-    signIn.removeEventListener("click", onSignIn);
-    signOut.removeEventListener("click", onSignOut);
-    heading.remove();
-    row.remove();
+    active = false;
+    heading.settingEl.remove();
+    row.settingEl.remove();
   };
 }

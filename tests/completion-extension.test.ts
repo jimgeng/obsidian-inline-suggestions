@@ -4,6 +4,7 @@ import { JSDOM } from "jsdom";
 import { Compartment, EditorSelection, EditorState, Extension, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { CompletionProvider } from "../src/completion-provider";
+import { PluginSettingsStore } from "../src/plugin-settings";
 import { createCompletionExtension, createCompletionIntegration, setCompletionEditorInfoField } from "../src/completion-extension";
 import { acceptGhost, dismissGhost, ghostField, ghostTextExtension, showGhost } from "../src/ghost-text";
 
@@ -176,6 +177,42 @@ describe("automatic completion extension", () => {
     enabled = false; integration.invalidate();
     assert.equal(second.state.field(ghostField).suggestion, null);
     integration.dispose(); assert.equal(closed, 2);
+  });
+
+  it("immediately cancels debounce/in-flight work and visible ghosts when the preference turns off", async () => {
+    const settings = new PluginSettingsStore({}, async () => {}, error => { throw error; });
+    const requests: { signal: AbortSignal; resolve: (text: string) => void }[] = [];
+    const integration = createCompletionIntegration(() => ({
+      complete: (_context, signal) => new Promise<string>(resolve => requests.push({ signal, resolve })),
+    }), () => settings.current.automaticSuggestions);
+    const unsubscribe = settings.subscribe(() => { if (!settings.current.automaticSuggestions) integration.invalidate(); });
+    const unused = { complete: async () => null };
+    const first = create(unused, true, integration.extension);
+    const second = create(unused, true, integration.extension);
+    for (const view of [first, second]) Object.defineProperty(view, "hasFocus", { get: () => true });
+    type(first, "!");
+    await wait();
+    type(second, "?"); // Still debouncing when disabled.
+    void settings.setAutomaticSuggestions(false);
+    assert.equal(requests[0]!.signal.aborted, true);
+    requests[0]!.resolve(" stale");
+    await wait();
+    assert.equal(requests.length, 1);
+    for (const view of [first, second]) assert.equal(view.state.field(ghostField).suggestion, null);
+    type(first, "?");
+    await wait();
+    assert.equal(requests.length, 1);
+    await settings.setAutomaticSuggestions(true);
+    await wait();
+    assert.equal(requests.length, 1); // Enabling waits for new typing.
+    type(first, ".");
+    await wait();
+    requests[1]!.resolve(" visible");
+    await nextTick();
+    assert.ok(first.state.field(ghostField).suggestion);
+    void settings.setAutomaticSuggestions(false);
+    assert.equal(first.state.field(ghostField).suggestion, null);
+    unsubscribe(); integration.dispose();
   });
 
   for (const action of ["blur", "composition", "read-only", "note", "dismiss", "teardown"] as const) {
