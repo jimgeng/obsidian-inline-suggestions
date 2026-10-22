@@ -5,5 +5,5 @@
   "minAppVersion": "1.13.0",
   "description": "Inline Markdown suggestions for Obsidian.",
   "author": "",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }

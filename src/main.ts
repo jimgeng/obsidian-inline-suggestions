@@ -1,4 +1,6 @@
-import { Editor, Plugin } from "obsidian";
+import { apiVersion, Editor, FileSystemAdapter, Notice, Plugin } from "obsidian";
+import { CopilotServerManager } from "./copilot/server-manager";
+import { NodePathSettingTab } from "./settings";
 import { EditorView } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
 import { acceptGhost, dismissGhost, ghostTextExtension, showGhost } from "./ghost-text";
@@ -18,7 +20,14 @@ export default class InlineSuggestionsPlugin extends Plugin {
   private readonly demoRequests = new WeakMap<EditorView, AbortController>();
   private readonly activeDemoRequests = new Set<AbortController>();
 
-  onload(): void {
+  private server?: CopilotServerManager;
+  private unloaded = false;
+
+  async onload(): Promise<void> {
+    this.register(() => {
+      this.unloaded = true;
+      void this.server?.stop();
+    });
     this.register(() => {
       for (const request of this.activeDemoRequests) request.abort();
       this.activeDemoRequests.clear();
@@ -88,5 +97,27 @@ export default class InlineSuggestionsPlugin extends Plugin {
         if (view) dismissGhost(view);
       },
     });
+
+    const data: unknown = await this.loadData();
+    if (this.unloaded) return;
+    const nodePath = data && typeof data === "object" && "nodePath" in data && typeof data.nodePath === "string"
+      ? data.nodePath : "";
+    this.addSettingTab(new NodePathSettingTab(this.app, this, nodePath, async value => {
+      await this.saveData({ nodePath: value });
+    }));
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) return;
+    let notified = false;
+    this.server = new CopilotServerManager({
+      nodePath,
+      vaultPath: adapter.getBasePath(),
+      editorVersion: apiVersion,
+      pluginVersion: this.manifest.version,
+      onFailure: message => {
+        if (!notified && !this.unloaded) { notified = true; new Notice(message, 7000); }
+      },
+    });
+    // Discovery/startup must never block editor registration or plugin loading.
+    void this.server.start();
   }
 }
