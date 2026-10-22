@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { after, afterEach, before, describe, it } from "mocha";
 import { JSDOM } from "jsdom";
-import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { history, undo, redo } from "@codemirror/commands";
 import { acceptGhost, dismissGhost, ghostField, ghostTextExtension, showGhost } from "../src/ghost-text";
@@ -97,6 +97,84 @@ describe("ghost text editor slice", () => {
     showGhost(view, view.state, " world");
     view.dispatch({ selection: view.state.selection });
     assert.equal(ghost(), null);
+  });
+  const type = (insert: string) => view.dispatch({
+    changes: { from: view.state.selection.main.head, insert },
+    selection: { anchor: view.state.selection.main.head + insert.length },
+    annotations: Transaction.userEvent.of("input.type"),
+  });
+
+  it("consumes single/multiple characters, Unicode and line breaks at the new anchor", () => {
+    create(); showGhost(view, view.state, "a😀e\u0301\n語end");
+    for (const [insert, remainder] of [["a", "😀e\u0301\n語end"], ["😀e\u0301", "\n語end"],
+      ["\n語", "end"], ["end", ""]]) {
+      type(insert!);
+      assert.deepEqual(ghost(), remainder ? { at: view.state.selection.main.head, text: remainder } : null);
+    }
+    assert.equal(text(), "helloa😀e\u0301\n語end");
+  });
+  it("retains single-line remainders mid-line without relaxing multiline restrictions", () => {
+    create({ selection: { anchor: 2 } });
+    assert.equal(showGhost(view, view.state, "ab\ncd"), false);
+    showGhost(view, view.state, "abc"); type("ab");
+    assert.deepEqual(ghost(), { at: 4, text: "c" });
+    assert.equal(text(), "heabllo");
+  });
+  for (const event of [undefined, "input.paste", "input.type.compose", "input.type.compose.start",
+    "input.complete", "undo", "redo"]) {
+    it(`invalidates matching insertions for ${event ?? "programmatic edits"}`, () => {
+      create(); showGhost(view, view.state, "abc");
+      view.dispatch({ changes: { from: 5, insert: "a" }, selection: { anchor: 6 },
+        annotations: event ? Transaction.userEvent.of(event) : [] });
+      assert.equal(ghost(), null);
+    });
+  }
+  for (const action of ["mismatch", "unrelated", "replacement", "multiple changes", "wrong cursor",
+    "selection", "multiple cursors"] as const) {
+    it(`invalidates typed-through reuse on ${action}`, () => {
+      create({ extensions: [ghostTextExtension, history(), EditorState.allowMultipleSelections.of(true)] });
+      showGhost(view, view.state, "abc");
+      const changes = action === "unrelated" ? { from: 0, insert: "a" } :
+        action === "replacement" ? { from: 4, to: 5, insert: "a" } :
+        action === "multiple changes" ? [{ from: 0, insert: "x" }, { from: 5, insert: "a" }] :
+        action === "selection" ? undefined : { from: 5, insert: action === "mismatch" ? "z" : "a" };
+      view.dispatch({ changes,
+        selection: action === "multiple cursors" ? EditorSelection.create([
+          EditorSelection.cursor(0), EditorSelection.cursor(6)]) :
+          { anchor: action === "wrong cursor" || action === "selection" ? 0 : action === "replacement" ? 5 : 6 },
+        annotations: Transaction.userEvent.of("input.type") });
+      assert.equal(ghost(), null);
+    });
+  }
+  it("uses the final filtered transaction rather than the proposed matching insertion", () => {
+    create({ extensions: [ghostTextExtension, EditorState.transactionFilter.of(tr => {
+      if (tr.isUserEvent("input.type")) return { changes: { from: 5, insert: "z" },
+        selection: { anchor: 6 }, annotations: Transaction.userEvent.of("input.type") };
+      return tr;
+    })] });
+    showGhost(view, view.state, "abc"); type("a");
+    assert.equal(text(), "helloz"); assert.equal(ghost(), null);
+  });
+  it("consumes the actual matching prefix and cursor produced by a transaction filter", () => {
+    create({ extensions: [ghostTextExtension, EditorState.transactionFilter.of(tr => {
+      if (tr.isUserEvent("input.type")) return { changes: { from: 5, insert: "ab" },
+        selection: { anchor: 7 }, annotations: Transaction.userEvent.of("input.type") };
+      return tr;
+    })] });
+    showGhost(view, view.state, "abc"); type("a");
+    assert.equal(text(), "helloab"); assert.deepEqual(ghost(), { at: 7, text: "c" });
+  });
+  it("drops a filtered-out typed insertion without consuming the ghost", () => {
+    create({ extensions: [ghostTextExtension, EditorState.changeFilter.of(() => false)] });
+    showGhost(view, view.state, "abc"); type("a");
+    assert.equal(text(), "hello"); assert.equal(ghost(), null);
+  });
+  it("preserves isolated word acceptance after typing through, without undo resurrection", () => {
+    create(); showGhost(view, view.state, "abc def ghi"); type("a");
+    assert.equal(acceptGhost(view, true), true);
+    assert.deepEqual(ghost(), { at: 9, text: "def ghi" });
+    undo(view); assert.equal(text(), "helloa"); assert.equal(ghost(), null);
+    redo(view); assert.equal(text(), "helloabc "); assert.equal(ghost(), null);
   });
   it("rejects stale snapshots even after a selection-only transaction", () => {
     create(); const snapshot = view.state;
