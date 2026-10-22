@@ -1,5 +1,7 @@
 import { apiVersion, Editor, FileSystemAdapter, Notice, Plugin } from "obsidian";
 import { CopilotServerManager } from "./copilot/server-manager";
+import { CopilotAuth } from "./copilot/auth";
+import { CopilotSignInModal } from "./copilot/auth-modal";
 import { NodePathSettingTab } from "./settings";
 import { EditorView } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
@@ -107,13 +109,38 @@ export default class InlineSuggestionsPlugin extends Plugin {
     }));
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) return;
+    const statusBar = this.addStatusBarItem();
+    statusBar.setText("Copilot: starting…");
+    const auth = new CopilotAuth({
+      ready: () => !!this.server?.connection && !this.unloaded,
+      resetSession: async () => {
+        await this.server?.stop();
+        if (!this.unloaded) await this.server?.start();
+      },
+      status: status => {
+        if (!this.unloaded) statusBar.setText(status
+          ? `Copilot: ${status.kind}${status.busy ? " (busy)" : ""}`
+          : "Copilot: unavailable");
+      },
+      notice: message => { if (!this.unloaded) new Notice(message, 7000); },
+      openUrl: async url => { window.open(url, "_blank", "noopener,noreferrer"); },
+      showCode: (code, proceed, cancel) => {
+        const modal = new CopilotSignInModal(this.app, code, proceed, cancel);
+        modal.open();
+        return modal;
+      },
+    });
+    this.addCommand({ id: "copilot-sign-in", name: "Sign in to Copilot", callback: () => { void auth.signIn(); } });
+    this.addCommand({ id: "copilot-sign-out", name: "Sign out of Copilot", callback: () => { void auth.signOut(); } });
     let notified = false;
     this.server = new CopilotServerManager({
       nodePath,
       vaultPath: adapter.getBasePath(),
       editorVersion: apiVersion,
       pluginVersion: this.manifest.version,
+      configureConnection: rpc => auth.attach(rpc),
       onFailure: message => {
+        if (!this.unloaded) statusBar.setText("Copilot: unavailable");
         if (!notified && !this.unloaded) { notified = true; new Notice(message, 7000); }
       },
     });

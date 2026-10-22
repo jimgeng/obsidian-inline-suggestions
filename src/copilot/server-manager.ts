@@ -10,6 +10,8 @@ export interface ServerOptions {
   editorVersion: string;
   pluginVersion: string;
   onFailure(message: string): void;
+  /** Install client handlers before initialize; dispose them with this connection. */
+  configureConnection?(rpc: MessageConnection): () => void;
 }
 
 export interface ServerHost {
@@ -49,6 +51,7 @@ interface Session {
   cancel: () => void;
   cancelled: Promise<never>;
   cleanup?: Promise<void>;
+  releaseClient?: () => void;
 }
 
 /** Owns the process/transport only; no editor state, authentication UI, or note text. */
@@ -119,12 +122,16 @@ export class CopilotServerManager {
       rpc.onRequest("workspace/configuration", (params: { items: { section?: string }[] }) =>
         params.items.map(item => item.section === "telemetry" ? { telemetryLevel: "off" }
           : item.section === "telemetry.telemetryLevel" ? "off" : null));
+      session.releaseClient = this.options.configureConnection?.(rpc);
       rpc.listen();
       const workspaceUri = pathToFileURL(this.options.vaultPath).href;
       await deadline(Promise.race([rpc.sendRequest("initialize", {
         processId: process.pid,
         workspaceFolders: [{ uri: workspaceUri, name: basename(this.options.vaultPath) }],
-        capabilities: { workspace: { workspaceFolders: true, configuration: true } },
+        capabilities: {
+          workspace: { workspaceFolders: true, configuration: true },
+          window: { showDocument: { support: true } },
+        },
         initializationOptions: {
           editorInfo: { name: "Obsidian", version: this.options.editorVersion },
           editorPluginInfo: { name: "Inline Suggestions", version: this.options.pluginVersion },
@@ -148,6 +155,8 @@ export class CopilotServerManager {
     session.failed = true;
     session.ready = false;
     session.cancel();
+    session.releaseClient?.();
+    session.releaseClient = undefined;
     if (!this.current(generation) || !wasReady) return;
     // launch owns startup failures; only a ready session earns recovery.
     // The restart budget is never reset on success, preventing a crash loop.
@@ -167,6 +176,8 @@ export class CopilotServerManager {
     session.ready = false;
     session.failed = true;
     session.cancel();
+    session.releaseClient?.();
+    session.releaseClient = undefined;
     session.cleanup = (async () => {
       try {
         if (graceful && wasReady && !session.exited) {

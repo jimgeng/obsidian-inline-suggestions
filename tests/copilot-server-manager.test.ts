@@ -22,7 +22,12 @@ async function until(predicate: () => boolean): Promise<void> {
   assert.fail("Timed out waiting for lifecycle event");
 }
 
-function fixture(options: { hangInitialize?: boolean; hangShutdown?: boolean; ignoreKill?: boolean } = {}) {
+function fixture(options: {
+  hangInitialize?: boolean;
+  hangShutdown?: boolean;
+  ignoreKill?: boolean;
+  configureConnection?: (rpc: MessageConnection) => () => void;
+} = {}) {
   const children: (ChildProcessWithoutNullStreams & { kills: (string | undefined)[] })[] = [];
   const messages: { method: string; params?: any }[] = [];
   const failures: string[] = [];
@@ -47,6 +52,7 @@ function fixture(options: { hangInitialize?: boolean; hangShutdown?: boolean; ig
       peers.push(peer);
       peer.onRequest("initialize", params => {
         messages.push({ method: "initialize", params });
+        if (options.configureConnection) void peer.sendNotification("didChangeStatus", { kind: "Normal", busy: false });
         return options.hangInitialize ? new Promise(() => {}) : { capabilities: {} };
       });
       peer.onRequest("shutdown", () => {
@@ -61,7 +67,7 @@ function fixture(options: { hangInitialize?: boolean; hangShutdown?: boolean; ig
     },
     connect: child => createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin)),
   };
-  const manager = new CopilotServerManager({ nodePath: "", vaultPath: process.cwd(), editorVersion: "1.13.0", pluginVersion: "0.1.0", onFailure: message => failures.push(message) }, host);
+  const manager = new CopilotServerManager({ nodePath: "", vaultPath: process.cwd(), editorVersion: "1.13.0", pluginVersion: "0.1.0", onFailure: message => failures.push(message), configureConnection: options.configureConnection }, host);
   managers.push(manager);
   return { manager, host, children, messages, failures };
 }
@@ -85,6 +91,41 @@ describe("Copilot server lifecycle (mock process, real JSON-RPC streams)", () =>
     assert.deepEqual(f.children[0].kills, []);
     assert.deepEqual(f.failures, []);
     await f.manager.stop();
+  });
+  it("installs client handlers before initialize and releases each connection once across restart/unload", async () => {
+    const statuses: unknown[] = [];
+    let attached = 0, released = 0;
+    const f = fixture({ configureConnection: rpc => {
+      attached++;
+      const listener = rpc.onNotification("didChangeStatus", value => statuses.push(value));
+      return () => { released++; listener.dispose(); };
+    } });
+    await f.manager.start();
+    await until(() => statuses.length === 1);
+    assert.equal(attached, 1);
+    assert.deepEqual(f.messages[0].params.capabilities.window, { showDocument: { support: true } });
+    f.children[0].emit("exit", 1);
+    await until(() => attached === 2 && statuses.length === 2 && !!f.manager.connection);
+    assert.equal(released, 1);
+    await f.manager.stop();
+    await f.manager.stop();
+    assert.equal(released, 2);
+  });
+  it("can retire an authentication session and start a fresh process after it exits", async () => {
+    const f = fixture();
+    await f.manager.start();
+    const old = f.manager.connection;
+    await f.manager.stop();
+    assert.ok(f.children[0].stdin.destroyed);
+    await f.manager.start();
+    assert.equal(f.children.length, 2);
+    assert.ok(f.manager.connection);
+    assert.notEqual(f.manager.connection, old);
+    await until(() => f.messages.length === 8);
+    assert.deepEqual(f.messages.map(message => message.method), [
+      "initialize", "initialized", "workspace/didChangeConfiguration", "shutdown", "exit",
+      "initialize", "initialized", "workspace/didChangeConfiguration",
+    ]);
   });
   it("does not spawn if unloaded during discovery", async () => {
     const f = fixture();
