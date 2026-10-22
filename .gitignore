@@ -2,4 +2,6 @@ node_modules/
 /.scratch/
 main.js
 *.tsbuildinfo
+dist/
+__pycache__/
 .env
