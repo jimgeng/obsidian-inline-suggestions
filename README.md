@@ -21,7 +21,7 @@ Pause while typing in a Markdown note to see a suggestion.
 
 - **Tab**: accept the suggestion.
 - **Ctrl+Right** (Windows/Linux) or **Cmd+Right** (macOS): accept the next suggested word.
-- **Escape**: dismiss the suggestion.
+- **Escape** or interactions with other UI: dismiss the suggestion.
 
 Toggle automatic suggestions in the plugin settings or with **Inline Suggestions: Toggle automatic suggestions**. When Copilot is unavailable, normal editing continues without suggestions.
 

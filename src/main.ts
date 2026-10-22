@@ -46,15 +46,15 @@ export default class InlineSuggestionsPlugin extends Plugin {
     setCompletionEditorInfoField(editorInfoField);
     this.registerEditorExtension(ghostTextExtension);
     this.registerEditorExtension(completions.extension);
-    this.addCommand({
-      id: "preview-ghost-text",
-      name: "Preview ghost text (demo)",
-      editorCallback: async editor => {
-        const view = codeMirror(editor);
-        if (!view) return;
-        await completions.preview(view, this.demoProvider);
-      },
-    });
+    // this.addCommand({
+    //   id: "preview-ghost-text",
+    //   name: "Preview ghost text (demo)",
+    //   editorCallback: async editor => {
+    //     const view = codeMirror(editor);
+    //     if (!view) return;
+    //     await completions.preview(view, this.demoProvider);
+    //   },
+    // });
     this.addCommand({
       id: "accept-ghost-text", name: "Accept suggestion",
       editorCallback: editor => {
