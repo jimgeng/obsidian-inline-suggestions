@@ -23,8 +23,8 @@
   - would otherwise be easy to miss, misrepresent, or require substantial investigation to rediscover.
 - Documentation updates should record established implementation realities, not redefine product requirements, speculate about future direction, or act as a running history of development.
 - Keep `Extra Vital Context` concise. Do not use it as a changelog, implementation diary, or store of temporary state.
-- Use GitHub issue comments (see `Task Tracking`) for continuity across sessions: progress, unfinished work, blockers, and next steps for that task. Only use `STATUS.md` for temporary context that belongs to no issue; keep it under 200 words and delete it when no longer useful.
-- Other than `AGENTS.md`, `README.md`, and `STATUS.md` do not create or modify agent-oriented scaffolding or documentation unless directly required by the user's task. For example, do not introduce ADRs, context files, planning documents, or similar artifacts merely for process completeness.
+- Use GitHub issue comments (see `Task Tracking`) for continuity across sessions: progress, unfinished work, blockers, and next steps for that task.
+- Do not create or modify agent-oriented scaffolding or documentation unless directly required by the user's task. For example, do not introduce ADRs, context files, planning documents, or similar artifacts merely for process completeness. For example, do not introduce ADRs, context files, planning documents, or similar artifacts merely for process completeness.
 - Do not add speculative extensibility, abstraction, configuration, providers, or architecture for hypothetical future requirements.
 
 ## Task Tracking
