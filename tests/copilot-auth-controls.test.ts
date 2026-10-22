@@ -88,12 +88,20 @@ describe("Copilot authentication controls", () => {
     disposeBar(); disposeSettings(); f.dom.window.close();
   });
 
-  it("allows either explicit action when authentication is unknown but disables both offline", () => {
+  it("hides both actions when authentication is unknown and disables them offline", () => {
     const f = fixture({ status: { kind: "Error", busy: false } });
     const dispose = bindAuthSettings(f.settings, f.auth);
     const buttons = Array.from(f.settings.querySelectorAll("button"));
     assert.match(f.settings.textContent!, /Authentication status unknown — Copilot access problem/);
-    assert.ok(buttons.every(button => !button.hidden && !button.disabled));
+    assert.ok(buttons.every(button => button.hidden && !button.disabled));
+    f.update({ authentication: "signed-out" });
+    assert.equal(buttons[0].hidden, false);
+    assert.equal(buttons[1].hidden, true);
+    f.update({ authentication: "signed-in" });
+    assert.equal(buttons[0].hidden, true);
+    assert.equal(buttons[1].hidden, false);
+    f.update({ authentication: "unknown" });
+    assert.ok(buttons.every(button => button.hidden));
     f.update({ available: false });
     assert.match(f.settings.textContent!, /unavailable or starting/);
     assert.ok(buttons.every(button => button.disabled));

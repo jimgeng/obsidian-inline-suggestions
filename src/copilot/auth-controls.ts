@@ -89,10 +89,9 @@ export function bindAuthSettings(container: HTMLElement, auth: Controls): () => 
   container.append(heading, row);
   const unsubscribe = auth.subscribe(state => {
     status.textContent = description(state);
-    // Unknown includes entitlement/network failures: allow either explicit action
-    // rather than guessing that every Error means the account is signed out.
-    signIn.hidden = state.authentication === "signed-in";
-    signOut.hidden = state.authentication === "signed-out";
+    // Offer only the action appropriate to the known authentication state.
+    signIn.hidden = state.authentication !== "signed-out";
+    signOut.hidden = state.authentication !== "signed-in";
     signIn.disabled = signOut.disabled = !state.available || state.pending;
   });
   return () => {
