@@ -1,7 +1,18 @@
 import { CancellationTokenSource, MessageConnection } from "vscode-jsonrpc";
 
-export type StatusKind = "Normal" | "Error" | "Warning" | "Inactive";
-export interface CopilotStatus { kind: StatusKind; busy: boolean }
+/** Raw language-server values; these are not authentication states or UI labels. */
+export type StatusKind =
+  | "Normal"   // Server operating normally.
+  | "Error"    // Authentication/authorization prevents use (including ordinary signed-out state).
+  | "Warning"  // Temporary issue, such as a failed HTTP request.
+  | "Inactive"; // Current file excluded by size or content rules; not a disconnected server.
+export interface CopilotStatus {
+  kind: StatusKind;
+  /** Work in progress, independent of severity and authentication. */
+  busy: boolean;
+  /** Explicit sign-in hint in this notification; absent means no such hint. */
+  requiresSignIn?: true;
+}
 export interface AuthState {
   authentication: "unknown" | "signed-in" | "signed-out";
   status?: CopilotStatus;
@@ -65,11 +76,15 @@ export class CopilotAuth {
     const status = rpc.onNotification("didChangeStatus", (value: unknown) => {
       if (this.rpc !== rpc || !value || typeof value !== "object") return;
       const data = value as { kind?: unknown; busy?: unknown; message?: unknown; command?: { command?: unknown } };
-      if (!["Normal", "Error", "Warning", "Inactive"].includes(String(data.kind))) return;
-      this.serverStatus = { kind: data.kind as StatusKind, busy: data.busy === true };
-      this.host.status?.(this.serverStatus);
+      if (typeof data.kind !== "string" || !["Normal", "Error", "Warning", "Inactive"].includes(data.kind)) return;
       const needsSignIn = data.command?.command === "github.copilot.signIn"
         || (typeof data.message === "string" && /not signed (in|into)|signed out|sign in again/i.test(data.message));
+      // Retain the reason, not arbitrary server text or command arguments, for UI classification.
+      this.serverStatus = {
+        kind: data.kind as StatusKind, busy: data.busy === true,
+        ...(needsSignIn ? { requiresSignIn: true as const } : {}),
+      };
+      this.host.status?.(this.serverStatus);
       if (needsSignIn) this.authentication = "signed-out";
       else if (data.kind === "Normal") this.authentication = "signed-in";
       // Other errors/warnings describe server health, not necessarily authentication.

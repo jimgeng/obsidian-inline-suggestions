@@ -61,30 +61,30 @@ describe("Copilot authentication controls", () => {
   });
 
   it("keeps settings and the status bar synchronized with relevant actions", () => {
-    const f = fixture({ authentication: "signed-out", status: { kind: "Error", busy: false } });
+    const f = fixture({ authentication: "signed-out", status: { kind: "Error", busy: false, requiresSignIn: true } });
     const disposeBar = bindAuthStatusBar(f.bar, f.auth);
     const disposeSettings = bindAuthSettings(f.settings, f.auth);
     assert.equal(f.settings.querySelector("h2")?.textContent, "Copilot authentication");
     const [signIn, signOut] = Array.from(f.settings.querySelectorAll("button"));
     const status = f.settings.querySelector("[role=status]")!;
-    assert.match(status.textContent!, /Signed out — error/);
+    assert.equal(status.textContent, "Signed out. Sign in to use Copilot.");
     assert.equal(signIn.hidden, false); assert.equal(signOut.hidden, true);
     signIn.click();
     assert.deepEqual(f.calls, ["signIn"]);
     f.update({ pending: true });
     assert.equal(signIn.disabled, true);
-    assert.match(status.textContent!, /authentication in progress/);
+    assert.match(status.textContent!, /Authentication in progress/);
     signIn.click(); f.bar.click();
     assert.deepEqual(f.calls, ["signIn"]);
     f.update({ authentication: "signed-in", pending: false, status: { kind: "Normal", busy: false } });
-    assert.match(status.textContent!, /Signed in — normal/);
+    assert.equal(status.textContent, "Signed in — Ready");
     assert.equal(f.bar.textContent, "Copilot: normal");
     assert.equal(signIn.hidden, true); assert.equal(signOut.hidden, false);
     signOut.click();
     assert.deepEqual(f.calls, ["signIn", "signOut"]);
     f.update({ status: { kind: "Warning", busy: true } });
     assert.equal(signOut.hidden, false);
-    assert.match(status.textContent!, /Signed in — warning \(busy\)/);
+    assert.equal(status.textContent, "Signed in — Temporary service issue — Copilot is busy");
     disposeBar(); disposeSettings(); f.dom.window.close();
   });
 
@@ -92,13 +92,36 @@ describe("Copilot authentication controls", () => {
     const f = fixture({ status: { kind: "Error", busy: false } });
     const dispose = bindAuthSettings(f.settings, f.auth);
     const buttons = Array.from(f.settings.querySelectorAll("button"));
-    assert.match(f.settings.textContent!, /Authentication status unknown — error/);
+    assert.match(f.settings.textContent!, /Authentication status unknown — Copilot access problem/);
     assert.ok(buttons.every(button => !button.hidden && !button.disabled));
     f.update({ available: false });
     assert.match(f.settings.textContent!, /unavailable or starting/);
     assert.ok(buttons.every(button => button.disabled));
     for (const button of buttons) button.click();
     assert.deepEqual(f.calls, []);
+    dispose(); f.dom.window.close();
+  });
+
+  it("distinguishes server health from authentication and activity", () => {
+    const f = fixture({ authentication: "signed-out" });
+    const dispose = bindAuthSettings(f.settings, f.auth);
+    const status = f.settings.querySelector("[role=status]")!;
+    for (const authentication of ["signed-out", "signed-in", "unknown"] as const) {
+      f.update({ authentication, status: { kind: "Error", busy: false, requiresSignIn: true } });
+      assert.doesNotMatch(status.textContent!, /error|problem/i);
+      f.update({ status: { kind: "Error", busy: false } });
+      assert.match(status.textContent!, /Copilot access problem/);
+      f.update({ status: { kind: "Warning", busy: false } });
+      assert.match(status.textContent!, /Temporary service issue/);
+      f.update({ status: { kind: "Inactive", busy: true } });
+      assert.match(status.textContent!, /Suggestions unavailable for this file \(size or content exclusions\) — Copilot is busy/);
+      f.update({ status: { kind: "Normal", busy: false } });
+      assert.equal(status.textContent!.includes("Ready"), authentication === "signed-in");
+      assert.doesNotMatch(status.textContent!, /busy|problem|Temporary|exclusions/);
+    }
+    f.update({ status: undefined, available: false, pending: true });
+    assert.match(status.textContent!, /unavailable or starting/);
+    assert.doesNotMatch(status.textContent!, /Ready|Authentication in progress/);
     dispose(); f.dom.window.close();
   });
 

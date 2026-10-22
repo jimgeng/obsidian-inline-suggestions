@@ -5,9 +5,23 @@ type Controls = Pick<CopilotAuth, "state" | "subscribe" | "signIn" | "signOut">;
 function description(state: AuthState): string {
   if (!state.available) return "Copilot server unavailable or starting. Check the Node path and server installation if this persists.";
   const identity = state.authentication === "signed-in" ? "Signed in"
-    : state.authentication === "signed-out" ? "Signed out" : "Authentication status unknown";
-  const health = state.status ? ` — ${state.status.kind.toLowerCase()}${state.status.busy ? " (busy)" : ""}` : "";
-  return `${identity}${health}${state.pending ? " — authentication in progress" : ""}`;
+    : state.authentication === "signed-out" ? "Signed out. Sign in to use Copilot." : "Authentication status unknown";
+  const parts = [identity];
+  const status = state.status;
+  if (status) {
+    // A sign-in-required Error is expected when signed out, not a separate failure.
+    // Do not hide unrelated errors just because authentication is signed out.
+    const health = {
+      Normal: state.authentication === "signed-in" ? "Ready" : "",
+      Error: status.requiresSignIn ? "" : "Copilot access problem",
+      Warning: "Temporary service issue",
+      Inactive: "Suggestions unavailable for this file (size or content exclusions)",
+    }[status.kind];
+    if (health) parts.push(health);
+    if (status.busy) parts.push("Copilot is busy");
+  }
+  if (state.pending) parts.push("Authentication in progress");
+  return parts.join(" — ");
 }
 
 /** Returns a disposer so the plugin owns listeners and subscriptions. */

@@ -115,7 +115,9 @@ describe("Copilot authentication (mock server, real JSON-RPC connection)", () =>
     }
     await f.peer.sendNotification("didChangeStatus", { kind: "Unknown" });
     await until(() => f.statuses.length === 8);
-    assert.deepEqual(f.statuses, ["Normal", "Error", "Warning", "Inactive"].flatMap(kind => [{ kind, busy: true }, { kind, busy: false }]));
+    assert.deepEqual(f.statuses, ["Normal", "Error", "Warning", "Inactive"].flatMap(kind => [
+      { kind, busy: true, requiresSignIn: true }, { kind, busy: false, requiresSignIn: true },
+    ]));
     assert.equal(f.notices.length, 1);
     assert.deepEqual(f.calls, []);
   });
@@ -297,6 +299,40 @@ describe("Copilot authentication (mock server, real JSON-RPC connection)", () =>
     await f.peer.sendNotification("didChangeStatus", { kind: "Error", busy: false, command: { command: "github.copilot.signIn" } });
     await until(() => f.auth.state.authentication === "signed-out");
   });
+  it("classifies explicit sign-in hints without retaining server text or command arguments", async () => {
+    const f = fixture();
+    for (const hint of [
+      { message: "You are not signed into GitHub." },
+      { message: "You are not signed in." },
+      { message: "Signed out" },
+      { message: "Please sign in again" },
+      { command: { command: "github.copilot.signIn", arguments: ["PRIVATE"] } },
+    ]) {
+      const count = f.statuses.length;
+      await f.peer.sendNotification("didChangeStatus", { kind: "Error", busy: false, ...hint });
+      await until(() => f.statuses.length > count);
+      assert.equal(f.auth.state.authentication, "signed-out");
+      assert.deepEqual(f.auth.state.status, { kind: "Error", busy: false, requiresSignIn: true });
+    }
+    for (const kind of ["Error", "Warning", "Inactive"]) {
+      const count = f.statuses.length;
+      await f.peer.sendNotification("didChangeStatus", { kind, busy: true, message: "Quota exceeded" });
+      await until(() => f.statuses.length > count);
+      assert.deepEqual(f.auth.state.status, { kind, busy: true });
+      assert.equal(f.auth.state.authentication, "signed-out");
+    }
+    await f.peer.sendNotification("didChangeStatus", { kind: "Normal", busy: false });
+    await until(() => f.auth.state.authentication === "signed-in");
+    assert.deepEqual(f.auth.state.status, { kind: "Normal", busy: false });
+    // Successful sign-out must not let the previous Normal status imply readiness.
+    await f.auth.signOut();
+    assert.equal(f.auth.state.authentication, "signed-out");
+    assert.equal(f.auth.state.status?.kind, "Normal");
+    f.detach();
+    assert.equal(f.auth.state.status, undefined);
+    assert.equal(f.auth.state.authentication, "unknown");
+  });
+
   it("coalesces repeated sign-in commands", async () => {
     const f = fixture();
     await Promise.all([f.auth.signIn(), f.auth.signIn()]);
