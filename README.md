@@ -1,51 +1,57 @@
 # Obsidian Inline Suggestions
 
+GitHub Copilot-powered inline Markdown suggestions in Obsidian, using your existing Copilot entitlement rather than a separate OpenAI/Codex API subscription.
+
+## Setup
+
+Requires **Obsidian desktop**, a GitHub account with Copilot access, and **Node.js 20.8+** with npm.
+
+1. Install GitHub's official language server:
+   ```sh
+   npm i -g @github/copilot-language-server
+   ```
+2. Build and deploy the plugin using the [development instructions](#development) below, then enable **Inline Suggestions** in Obsidian's community plugin settings.
+3. Run **Inline Suggestions: Sign in to Copilot** from Obsidian's command palette and follow the GitHub sign-in prompts.
+
+If Node cannot be found, set **Node path** in the plugin settings to the absolute path of your Node executable, then reload the plugin. The language server manages authentication and tokens.
+
+## Usage
+
+Pause while typing in a Markdown note to see a suggestion.
+
+- **Tab**: accept the suggestion.
+- **Ctrl+Right** (Windows/Linux) or **Cmd+Right** (macOS): accept the next suggested word.
+- **Escape**: dismiss the suggestion.
+
+Toggle automatic suggestions in the plugin settings or with **Inline Suggestions: Toggle automatic suggestions**. When Copilot is unavailable, normal editing continues without suggestions.
+
 ## Development
+
+Use **Node.js 20.19+ or 22.12+** for the development tooling (a higher minimum than the plugin's runtime requirement).
 
 ```sh
 npm ci
 npm run dev        # Watch and rebuild main.js
 npm run typecheck  # Check source and test TypeScript
-npm test           # Run Mocha tests
+npm test           # Run tests
 npm run test:watch # Rerun tests when files change
 npm run build      # Type-check and produce a production main.js
 ```
 
-Tests live in `tests/**/*.test.ts` and run through `tsx`, using Mocha and Node's built-in `node:assert` assertions. `npm run typecheck` checks tests too; `tsx` itself does not type-check. Tests run in Node, not inside Obsidian, so code that imports the Obsidian runtime requires mocks or host-specific integration testing.
+Tests in `tests/**/*.test.ts` run in Node, not inside Obsidian; host-specific behavior requires mocks or manual testing in a vault.
 
 ### Deploy to your vault
 
-Use Node.js 20.19+ or 22.12+ (required by the development tooling). Copy `.env.example` to `.env` and set `OBSIDIAN_VAULT_PATH` to your vault root, using forward slashes on Windows:
+Copy `.env.example` to `.env` and set your vault root, using forward slashes on Windows:
 
 ```dotenv
 OBSIDIAN_VAULT_PATH="C:/Users/you/Documents/My Vault"
 ```
 
-`.env` is gitignored. Run `npm run deploy` to type-check, build, and copy `main.js`, `manifest.json`, and `styles.css` (if present) into `<vault>/.obsidian/plugins/obsidian-inline-suggestions/`. The vault must already contain an `.obsidian` folder; relative vault paths are resolved from this project. Existing plugin settings are preserved.
+Run `npm run deploy` to build and copy the plugin into `<vault>/.obsidian/plugins/obsidian-inline-suggestions/`. The vault must already contain an `.obsidian` folder. `.env` is gitignored and existing plugin settings are preserved.
 
-Enable **Inline Suggestions** in Obsidian's community plugin settings after the first deployment. After subsequent deployments, reload the plugin (disable/enable it) or restart Obsidian to load the new build.
+Enable **Inline Suggestions** after the first deployment. After subsequent deployments, disable/enable the plugin or restart Obsidian to load the new build.
 
-## Goal
+## Scope
 
-Provide low-latency, GitHub Copilot-style inline Markdown completions in Obsidian using the user's existing GitHub Copilot entitlement. The primary intended configuration should not require a separate OpenAI/Codex API subscription.
-
-## Intended Behavior
-
-- After an appropriate typing pause, request a completion using context around the cursor.
-- Display inline ghost text with straightforward acceptance (likely Tab).
-- Invalidate suggestions after relevant document changes; stale asynchronous responses must not affect newer editor state.
-- Cancel or ignore in-flight work as appropriate.
-- Stay responsive during requests and fail unobtrusively when Copilot is unavailable, without interfering with normal editing.
-
-## Constraints
-
-- GitHub-specific transport and authentication must stay isolated behind a completion-provider boundary, separate from editor/rendering logic. 
-- Undocumented Copilot behavior must be easy to replace; its current API details are not settled project requirements.
-
-## Initial Non-goals
-
-- AI chat, autonomous agent mode, or vault-wide autonomous editing.
-- A generic multi-provider AI framework.
-- Elaborate settings before they are needed.
-- Speculative synchronization or backend services.
-- Reproducing every VS Code Copilot feature.
+Focused on low-latency inline Markdown completions, not AI chat, autonomous editing, or a generic multi-provider framework. Reproducing every VS Code Copilot feature, speculative backend services, and elaborate configuration are outside the project's scope.
