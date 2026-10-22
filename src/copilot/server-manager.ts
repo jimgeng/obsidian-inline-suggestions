@@ -10,6 +10,9 @@ export interface ServerOptions {
   editorVersion: string;
   pluginVersion: string;
   onFailure(message: string): void;
+  onReady?(): void;
+  /** Install client handlers before initialize; dispose them with this connection. */
+  configureConnection?(rpc: MessageConnection): () => void;
 }
 
 export interface ServerHost {
@@ -49,6 +52,7 @@ interface Session {
   cancel: () => void;
   cancelled: Promise<never>;
   cleanup?: Promise<void>;
+  releaseClient?: () => void;
 }
 
 /** Owns the process/transport only; no editor state, authentication UI, or note text. */
@@ -119,12 +123,16 @@ export class CopilotServerManager {
       rpc.onRequest("workspace/configuration", (params: { items: { section?: string }[] }) =>
         params.items.map(item => item.section === "telemetry" ? { telemetryLevel: "off" }
           : item.section === "telemetry.telemetryLevel" ? "off" : null));
+      session.releaseClient = this.options.configureConnection?.(rpc);
       rpc.listen();
       const workspaceUri = pathToFileURL(this.options.vaultPath).href;
       await deadline(Promise.race([rpc.sendRequest("initialize", {
         processId: process.pid,
         workspaceFolders: [{ uri: workspaceUri, name: basename(this.options.vaultPath) }],
-        capabilities: { workspace: { workspaceFolders: true, configuration: true } },
+        capabilities: {
+          workspace: { workspaceFolders: true, configuration: true },
+          window: { showDocument: { support: true } },
+        },
         initializationOptions: {
           editorInfo: { name: "Obsidian", version: this.options.editorVersion },
           editorPluginInfo: { name: "Inline Suggestions", version: this.options.pluginVersion },
@@ -136,6 +144,7 @@ export class CopilotServerManager {
       await deadline(Promise.race([rpc.sendNotification("workspace/didChangeConfiguration", { settings: { telemetry: { telemetryLevel: "off" } } }), cancelled]), this.host.initializeTimeoutMs);
       if (!this.current(generation) || session.failed) throw new Error("Server startup cancelled.");
       session.ready = true;
+      this.options.onReady?.();
     } catch {
       if (session) await this.dispose(session, false);
       if (this.current(generation)) this.options.onFailure("Copilot server unavailable. Check Node path and the global @github/copilot-language-server installation.");
@@ -148,6 +157,8 @@ export class CopilotServerManager {
     session.failed = true;
     session.ready = false;
     session.cancel();
+    session.releaseClient?.();
+    session.releaseClient = undefined;
     if (!this.current(generation) || !wasReady) return;
     // launch owns startup failures; only a ready session earns recovery.
     // The restart budget is never reset on success, preventing a crash loop.
@@ -167,6 +178,8 @@ export class CopilotServerManager {
     session.ready = false;
     session.failed = true;
     session.cancel();
+    session.releaseClient?.();
+    session.releaseClient = undefined;
     session.cleanup = (async () => {
       try {
         if (graceful && wasReady && !session.exited) {
