@@ -34,6 +34,7 @@ Work is tracked as GitHub issues in `jimgeng/obsidian-inline-suggestions`, on th
 
 - Find work: `gh project item-list 3 --owner jimgeng --format json --jq '.items[] | select(.status=="Ready") | "#\(.content.number) \(.title)"'`. Only pick an issue whose `blockedBy` issues are closed (`gh issue view N --json blockedBy`).
 - Per task: `gh issue view N --comments` → present the plan and wait for approval (Session step 2) → branch `issue-N-short-name` → implement and test → open a PR whose body contains `Closes #N` → set the board Status to In Review.
+- Before opening a PR, read and follow [`.github/pull_request_template.md`](.github/pull_request_template.md). Preserve its required sections and follow its guidance even when submitting with `gh pr create --body` or `--body-file`.
 - Stay inside the issue's Scope/Out of scope. Record discovered follow-up work as new issues (`.github/ISSUE_TEMPLATE/task.md` headings, with `--add-blocked-by` where relevant) rather than expanding the current one.
 - Before ending a session on unfinished work, leave a short hand-off comment on the issue.
 - Move a card: get the item id with `gh project item-list 3 --owner jimgeng --format json --jq '.items[] | select(.content.number==N) | .id'`, then `gh project item-edit --id <item-id> --project-id PVT_kwHOAoS0i84BnJCL --field-id PVTSSF_lAHOAoS0i84BnJCLzhlvAr0 --single-select-option-id <option>`. Options: Todo `56880333`, Ready `3c66ac42`, In Progress `dc5c88e0`, In Review `c3bf103a`, Done `40725e76`. New issues need `gh project item-add 3 --owner jimgeng --url <issue-url>`.
