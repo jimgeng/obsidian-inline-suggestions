@@ -8,7 +8,8 @@ const context = await esbuild.context({
   // Use Obsidian's CM instances. Bundling a second copy can break state identity.
   external: ["obsidian", "@codemirror/*", "@lezer/*"],
   format: "cjs",
-  platform: "browser",
+  // Desktop-only: keep Node built-ins external to Obsidian's Electron runtime.
+  platform: "node",
   target: "es2018",
   sourcemap: production ? false : "inline",
   minify: production,
