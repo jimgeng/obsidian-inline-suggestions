@@ -26,6 +26,7 @@
 - Use GitHub issue comments (see `Task Tracking`) for continuity across sessions: progress, unfinished work, blockers, and next steps for that task.
 - Do not create or modify agent-oriented scaffolding or documentation unless directly required by the user's task. For example, do not introduce ADRs, context files, planning documents, or similar artifacts merely for process completeness. For example, do not introduce ADRs, context files, planning documents, or similar artifacts merely for process completeness.
 - Do not add speculative extensibility, abstraction, configuration, providers, or architecture for hypothetical future requirements.
+- Keep code modular: group related responsibilities behind clear boundaries, while avoiding abstractions that add complexity without a concrete benefit.
 
 ## Task Tracking
 
