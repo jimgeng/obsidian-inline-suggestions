@@ -47,6 +47,31 @@ function fixture(resetSession: () => Promise<void> = async () => {}, openUrl?: (
 }
 
 describe("Copilot authentication (mock server, real JSON-RPC connection)", () => {
+  it("allows note context only while authenticated, ready, healthy and not signing out", async () => {
+    const f = fixture();
+    assert.equal(f.auth.canComplete, false);
+    await f.peer.sendNotification("didChangeStatus", { kind: "Normal", busy: true });
+    await until(() => f.auth.canComplete);
+    // Busy is activity, not unavailability; Warning and Inactive are not auth errors.
+    for (const kind of ["Warning", "Inactive", "Error"] as const) {
+      await f.peer.sendNotification("didChangeStatus", { kind });
+      await until(() => f.auth.state.status?.kind === kind);
+      assert.equal(f.auth.canComplete, kind !== "Error");
+    }
+    await f.peer.sendNotification("didChangeStatus", { kind: "Normal" });
+    await until(() => f.auth.canComplete);
+    f.setReady(false); assert.equal(f.auth.canComplete, false);
+    f.setReady(true); assert.equal(f.auth.canComplete, true);
+    let finish!: () => void;
+    f.peer.onRequest("signOut", () => new Promise<void>(resolve => { finish = resolve; }));
+    const signingOut = f.auth.signOut();
+    await until(() => !!finish);
+    assert.equal(f.auth.canComplete, false);
+    finish(); await signingOut;
+    assert.equal(f.auth.canComplete, false);
+    f.detach(); assert.equal(f.auth.canComplete, false);
+  });
+
   it("shows the code before executing, opens the browser, and follows server status", async () => {
     const f = fixture();
     let release!: () => void;

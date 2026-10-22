@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, it } from "mocha";
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter, ResponseError } from "vscode-jsonrpc/node";
 import { CopilotCompletionProvider } from "../src/copilot/completion-provider";
+import { CopilotAuth } from "../src/copilot/auth";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
@@ -34,6 +35,49 @@ function fixture() {
 const signal = () => new AbortController().signal;
 
 describe("Copilot completion provider (real JSON-RPC, mock server)", () => {
+  it("gates context on real auth state without suppressing document cleanup", async () => {
+    const f = fixture();
+    let ready = true;
+    const auth = new CopilotAuth({ ready: () => ready, resetSession: async () => {},
+      notice: () => {}, openUrl: async () => {}, showCode: () => ({ close() {} }) });
+    cleanups.push(auth.attach(f.rpc));
+    f.peer.onRequest("signOut", () => ({}));
+    const provider = new CopilotCompletionProvider(() => f.rpc, () => ({ tabSize: 4, insertSpaces: true }), () => auth.canComplete);
+    const context = { prefix: "private note", suffix: "" };
+    const blocked = async () => {
+      const before = f.calls.length;
+      await provider.sync(context); await provider.focus();
+      assert.equal(await provider.complete(context, signal()), null);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      assert.equal(f.calls.length, before);
+    };
+    await blocked(); // Unknown credentials on startup.
+    await f.peer.sendNotification("didChangeStatus", { kind: "Normal" });
+    await until(() => auth.canComplete);
+    assert.equal(await provider.complete(context, signal()), "next");
+    ready = false; await blocked(); ready = true;
+    await f.peer.sendNotification("didChangeStatus", { kind: "Error" });
+    await until(() => !auth.canComplete); await blocked();
+    await f.peer.sendNotification("didChangeStatus", { kind: "Normal" });
+    await until(() => auth.canComplete);
+    await auth.signOut(); await blocked();
+    await provider.close();
+    await until(() => f.calls.some(call => call.method === "textDocument/didClose"));
+    assert.equal(f.calls.filter(call => call.method === "textDocument/didOpen").length, 1);
+    assert.equal(f.calls.filter(call => call.method === "textDocument/inlineCompletion").length, 1);
+  });
+
+  it("rechecks permission before queued sync sends any context", async () => {
+    const f = fixture();
+    let enabled = true;
+    const provider = new CopilotCompletionProvider(() => f.rpc, () => ({ tabSize: 4, insertSpaces: true }), () => enabled);
+    const pending = provider.complete({ prefix: "not sent", suffix: "" }, signal());
+    enabled = false;
+    assert.equal(await pending, null);
+    assert.deepEqual(f.calls, []);
+    await provider.close();
+  });
+
   it("opens, focuses, versions incremental changes, sends formatting, and closes", async () => {
     const f = fixture();
     assert.equal(await f.provider.complete({ prefix: "a", suffix: "" }, signal()), "next");
