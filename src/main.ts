@@ -3,7 +3,8 @@ import { CopilotServerManager } from "./copilot/server-manager";
 import { CopilotAuth } from "./copilot/auth";
 import { CopilotSignInModal } from "./copilot/auth-modal";
 import { bindAuthStatusBar } from "./copilot/auth-controls";
-import { NodePathSettingTab } from "./settings";
+import { InlineSuggestionsSettingTab } from "./settings";
+import { PluginSettingsStore } from "./plugin-settings";
 import { EditorView } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
 import { acceptGhost, ghostTextExtension } from "./ghost-text";
@@ -30,7 +31,8 @@ export default class InlineSuggestionsPlugin extends Plugin {
       void this.server?.stop();
     });
     let auth: CopilotAuth | undefined;
-    const enabled = () => !this.unloaded && auth?.canComplete === true;
+    let preferences: PluginSettingsStore | undefined;
+    const enabled = () => !this.unloaded && preferences?.current.automaticSuggestions === true && auth?.canComplete === true;
     const completions = createCompletionIntegration(view => new CopilotCompletionProvider(
       () => this.server?.connection,
       () => {
@@ -77,12 +79,21 @@ export default class InlineSuggestionsPlugin extends Plugin {
 
     const data: unknown = await this.loadData();
     if (this.unloaded) return;
-    const nodePath = data && typeof data === "object" && "nodePath" in data && typeof data.nodePath === "string"
-      ? data.nodePath : "";
-    const saveNodePath = async (value: string) => { await this.saveData({ nodePath: value }); };
+    preferences = new PluginSettingsStore(data, value => this.saveData(value), () => {
+      if (!this.unloaded) new Notice("Could not save Inline Suggestions settings. Your changes may not survive a reload.", 7000);
+    });
+    const pluginSettings = preferences;
+    const { nodePath } = pluginSettings.current;
+    this.register(pluginSettings.subscribe(() => { if (!enabled()) completions.invalidate(); }));
+    this.addCommand({
+      id: "toggle-automatic-suggestions", name: "Toggle automatic suggestions",
+      callback: () => { void pluginSettings.setAutomaticSuggestions(!pluginSettings.current.automaticSuggestions); },
+    });
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) {
-      this.addSettingTab(new NodePathSettingTab(this.app, this, nodePath, saveNodePath));
+      const settings = new InlineSuggestionsSettingTab(this.app, this, pluginSettings);
+      this.addSettingTab(settings);
+      this.register(() => settings.hide());
       return;
     }
     const statusBar = this.addStatusBarItem();
@@ -103,8 +114,8 @@ export default class InlineSuggestionsPlugin extends Plugin {
     });
     const copilotAuth = auth;
     this.register(auth.subscribe(() => { if (!enabled()) completions.invalidate(); }));
-    this.register(bindAuthStatusBar(statusBar, auth));
-    const settings = new NodePathSettingTab(this.app, this, nodePath, saveNodePath, auth);
+    this.register(bindAuthStatusBar(statusBar, auth, pluginSettings));
+    const settings = new InlineSuggestionsSettingTab(this.app, this, pluginSettings, auth);
     this.addSettingTab(settings);
     this.register(() => settings.hide());
     this.addCommand({ id: "copilot-sign-in", name: "Sign in to Copilot", callback: () => { void copilotAuth.signIn(); } });
