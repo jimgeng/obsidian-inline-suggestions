@@ -58,34 +58,7 @@ Enable **Inline Suggestions** after the first deployment. After subsequent deplo
 
 ## Releases
 
-`main` is the integration branch. Merging a PR does **not** publish a release; only pushing a version tag triggers `.github/workflows/release.yml`. No production branch is needed.
-
-To prepare a release from an up-to-date `main`, create a release branch and run:
-
-```sh
-npm ci
-npm version patch --no-git-tag-version # or minor / major / an explicit X.Y.Z
-npm run typecheck
-npm test
-npm run build
-python -m unittest discover -s scripts -p 'test_*.py'
-python scripts/package-release.py --tag X.Y.Z
-```
-
-Use the actual version in place of `X.Y.Z`. Packaging requires Python 3 (standard library only; CI sets it up automatically). `npm version` updates `package.json` and `package-lock.json`; its lifecycle script synchronizes `manifest.json` and adds the minimum Obsidian version to `versions.json`. If compatibility changes, update `manifest.json`'s `minAppVersion` **before** bumping the version. Releases use stable SemVer (`X.Y.Z`, no prerelease suffix).
-
-Commit the four version files and open a PR. Before publishing, manually extract `dist/obsidian-inline-suggestions-X.Y.Z.zip` into a test vault and confirm the plugin loads and sign-in/suggestions work. Automated checks verify ZIP contents and metadata, not installation inside Obsidian.
-
-After the PR is merged, check out its merged commit on `main` and tag it:
-
-```sh
-git switch main
-git pull --ff-only
-git tag X.Y.Z
-git push origin X.Y.Z
-```
-
-Tags must exactly match the version, **without a `v` prefix**. The workflow runs checks, builds the plugin, validates matching versions, and publishes a GitHub release with generated notes, `main.js`, `manifest.json`, optional `styles.css`, and the install-ready ZIP. It does not publish to Obsidian's community plugin directory. Do not move published tags; use a new patch version for corrections.
+For maintainer instructions on preparing, reviewing, and publishing a release, see [Releases](docs/releases.md).
 
 ## License
 

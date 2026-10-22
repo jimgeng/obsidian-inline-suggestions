@@ -44,7 +44,7 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
-  publish:
+  draft:
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -54,7 +54,7 @@ jobs:
         with:
           name: release
           path: release
-      - name: Publish GitHub release
+      - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -62,4 +62,4 @@ jobs:
         run: |
           assets=(release/main.js release/manifest.json release/dist/*.zip)
           if [ -f release/styles.css ]; then assets+=(release/styles.css); fi
-          gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --generate-notes --title "$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --generate-notes --draft --title "$RELEASE_TAG"
