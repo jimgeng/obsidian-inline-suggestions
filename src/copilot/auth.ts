@@ -55,6 +55,12 @@ export class CopilotAuth {
     };
   }
 
+  /** Unknown authentication and pending sign-out must never send note context. */
+  get canComplete(): boolean {
+    const state = this.state;
+    return state.available && !state.pending && state.authentication === "signed-in" && state.status?.kind !== "Error";
+  }
+
   subscribe(listener: (state: AuthState) => void): () => void {
     this.listeners.add(listener);
     listener(this.state);

@@ -18,6 +18,7 @@ export class CopilotCompletionProvider implements CompletionProvider {
   constructor(
     private readonly connection: () => MessageConnection | undefined,
     private readonly formatting: () => FormattingOptions,
+    private readonly enabled: () => boolean = () => true,
   ) {}
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -30,7 +31,7 @@ export class CopilotCompletionProvider implements CompletionProvider {
   sync(context: CompletionContext): Promise<void> {
     const text = normalizeNewlines(context.prefix) + normalizeNewlines(context.suffix);
     return this.enqueue(async () => {
-      if (this.closed) return;
+      if (this.closed || !this.enabled()) return;
       const rpc = this.connection();
       if (!rpc) { this.document = undefined; return; }
       try {
@@ -62,7 +63,7 @@ export class CopilotCompletionProvider implements CompletionProvider {
 
   focus(): Promise<void> {
     return this.enqueue(async () => {
-      if (!this.closed && this.document && this.document.rpc === this.connection()) {
+      if (!this.closed && this.enabled() && this.document && this.document.rpc === this.connection()) {
         try { await this.document.rpc.sendNotification("textDocument/didFocus", { textDocument: { uri: this.uri } }); }
         catch { this.document = undefined; }
       }
@@ -70,7 +71,7 @@ export class CopilotCompletionProvider implements CompletionProvider {
   }
 
   async complete(context: CompletionContext, signal: AbortSignal): Promise<string | null> {
-    if (this.closed || signal.aborted) return null;
+    if (this.closed || !this.enabled() || signal.aborted) return null;
     this.active?.abort();
     const controller = new AbortController();
     this.active = controller;
@@ -84,7 +85,7 @@ export class CopilotCompletionProvider implements CompletionProvider {
     const request = async (): Promise<string | null> => {
       await this.sync(context);
       await this.focus();
-      if (controller.signal.aborted || this.closed) return null;
+      if (controller.signal.aborted || this.closed || !this.enabled()) return null;
       const document = this.document;
       if (!document || document.rpc !== this.connection()
         || document.text !== normalizeNewlines(context.prefix) + normalizeNewlines(context.suffix)) return null;
@@ -94,7 +95,7 @@ export class CopilotCompletionProvider implements CompletionProvider {
         context: { triggerKind: 2 },
         formattingOptions: this.formatting(),
       }, token.token);
-      if (controller.signal.aborted || this.closed || this.document !== document || document.rpc !== this.connection()) return null;
+      if (controller.signal.aborted || this.closed || !this.enabled() || this.document !== document || document.rpc !== this.connection()) return null;
       const items = (response as { items?: unknown[] } | null)?.items;
       if (!Array.isArray(items)) return null;
       for (const item of items) {

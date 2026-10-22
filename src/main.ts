@@ -6,9 +6,9 @@ import { bindAuthStatusBar } from "./copilot/auth-controls";
 import { NodePathSettingTab } from "./settings";
 import { EditorView } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
-import { acceptGhost, dismissGhost, ghostTextExtension, showGhost } from "./ghost-text";
-import { createCompletionExtension, setCompletionEditorInfoField } from "./completion-extension";
-import { CompletionProvider } from "./completion-provider";
+import { acceptGhost, ghostTextExtension } from "./ghost-text";
+import { createCompletionIntegration, setCompletionEditorInfoField } from "./completion-extension";
+import { CopilotCompletionProvider } from "./copilot/completion-provider";
 import { FakeCompletionProvider } from "./fake-provider";
 
 // Obsidian exposes CM6 here at runtime, but not in its public Editor typings.
@@ -19,9 +19,7 @@ function codeMirror(editor: Editor): EditorView | undefined {
 }
 
 export default class InlineSuggestionsPlugin extends Plugin {
-  completionProvider: CompletionProvider = new FakeCompletionProvider();
-  private readonly demoRequests = new WeakMap<EditorView, AbortController>();
-  private readonly activeDemoRequests = new Set<AbortController>();
+  private readonly demoProvider = new FakeCompletionProvider();
 
   private server?: CopilotServerManager;
   private unloaded = false;
@@ -31,52 +29,28 @@ export default class InlineSuggestionsPlugin extends Plugin {
       this.unloaded = true;
       void this.server?.stop();
     });
-    this.register(() => {
-      for (const request of this.activeDemoRequests) request.abort();
-      this.activeDemoRequests.clear();
-    });
+    let auth: CopilotAuth | undefined;
+    const enabled = () => !this.unloaded && auth?.canComplete === true;
+    const completions = createCompletionIntegration(view => new CopilotCompletionProvider(
+      () => this.server?.connection,
+      () => {
+        // Obsidian's vault configuration accessor is runtime-only, like Editor.cm.
+        const vault = this.app.vault as typeof this.app.vault & { getConfig?(key: string): unknown };
+        return { tabSize: view.state.tabSize, insertSpaces: vault.getConfig?.("useTab") !== true };
+      },
+      enabled,
+    ), enabled);
+    this.register(() => completions.dispose());
     setCompletionEditorInfoField(editorInfoField);
     this.registerEditorExtension(ghostTextExtension);
-    this.registerEditorExtension(createCompletionExtension(this.completionProvider));
+    this.registerEditorExtension(completions.extension);
     this.addCommand({
       id: "preview-ghost-text",
       name: "Preview ghost text (demo)",
       editorCallback: async editor => {
         const view = codeMirror(editor);
         if (!view) return;
-        this.demoRequests.get(view)?.abort();
-        const request = new AbortController();
-        this.demoRequests.set(view, request);
-        this.activeDemoRequests.add(request);
-        const cancel = () => request.abort();
-        view.contentDOM.addEventListener("blur", cancel, { once: true });
-        view.contentDOM.addEventListener("mousedown", cancel, { once: true });
-        view.contentDOM.addEventListener("compositionstart", cancel, { once: true });
-        const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") cancel(); };
-        view.contentDOM.addEventListener("keydown", onKeyDown);
-        view.focus();
-        const source = view.state;
-        const selection = source.selection;
-        if (source.readOnly || selection.ranges.length !== 1 || !selection.main.empty) return;
-        const at = selection.main.head;
-        try {
-          const text = await this.completionProvider.complete({
-            prefix: source.doc.sliceString(0, at),
-            suffix: source.doc.sliceString(at),
-          }, request.signal);
-          if (!request.signal.aborted && this.demoRequests.get(view) === request && text !== null) {
-            showGhost(view, source, text);
-          }
-        } catch {
-          // Provider failures must not interfere with normal editing.
-        } finally {
-          this.activeDemoRequests.delete(request);
-          view.contentDOM.removeEventListener("blur", cancel);
-          view.contentDOM.removeEventListener("mousedown", cancel);
-          view.contentDOM.removeEventListener("compositionstart", cancel);
-          view.contentDOM.removeEventListener("keydown", onKeyDown);
-          if (this.demoRequests.get(view) === request) this.demoRequests.delete(view);
-        }
+        await completions.preview(view, this.demoProvider);
       },
     });
     this.addCommand({
@@ -97,7 +71,7 @@ export default class InlineSuggestionsPlugin extends Plugin {
       id: "dismiss-ghost-text", name: "Dismiss suggestion",
       editorCallback: editor => {
         const view = codeMirror(editor);
-        if (view) dismissGhost(view);
+        if (view) completions.dismiss(view);
       },
     });
 
@@ -113,7 +87,7 @@ export default class InlineSuggestionsPlugin extends Plugin {
     }
     const statusBar = this.addStatusBarItem();
     statusBar.setText("Copilot: starting…");
-    const auth = new CopilotAuth({
+    auth = new CopilotAuth({
       ready: () => !!this.server?.connection && !this.unloaded,
       resetSession: async () => {
         await this.server?.stop();
@@ -127,22 +101,24 @@ export default class InlineSuggestionsPlugin extends Plugin {
         return modal;
       },
     });
+    const copilotAuth = auth;
+    this.register(auth.subscribe(() => { if (!enabled()) completions.invalidate(); }));
     this.register(bindAuthStatusBar(statusBar, auth));
     const settings = new NodePathSettingTab(this.app, this, nodePath, saveNodePath, auth);
     this.addSettingTab(settings);
     this.register(() => settings.hide());
-    this.addCommand({ id: "copilot-sign-in", name: "Sign in to Copilot", callback: () => { void auth.signIn(); } });
-    this.addCommand({ id: "copilot-sign-out", name: "Sign out of Copilot", callback: () => { void auth.signOut(); } });
+    this.addCommand({ id: "copilot-sign-in", name: "Sign in to Copilot", callback: () => { void copilotAuth.signIn(); } });
+    this.addCommand({ id: "copilot-sign-out", name: "Sign out of Copilot", callback: () => { void copilotAuth.signOut(); } });
     let notified = false;
     this.server = new CopilotServerManager({
       nodePath,
       vaultPath: adapter.getBasePath(),
       editorVersion: apiVersion,
       pluginVersion: this.manifest.version,
-      configureConnection: rpc => auth.attach(rpc),
-      onReady: () => auth.connectionChanged(),
+      configureConnection: rpc => copilotAuth.attach(rpc),
+      onReady: () => copilotAuth.connectionChanged(),
       onFailure: message => {
-        auth.connectionChanged();
+        copilotAuth.connectionChanged();
         if (!notified && !this.unloaded) { notified = true; new Notice(message, 7000); }
       },
     });
