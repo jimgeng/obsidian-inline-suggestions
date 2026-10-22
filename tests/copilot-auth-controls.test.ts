@@ -65,10 +65,10 @@ describe("Copilot authentication controls", () => {
     const disposeBar = bindAuthStatusBar(f.bar, f.auth);
     const disposeSettings = bindAuthSettings(f.settings, f.auth);
     assert.equal(f.settings.querySelector("h2")?.textContent, "Copilot authentication");
-    const [signIn, signOut] = Array.from(f.settings.querySelectorAll("button"));
+    const signIn = f.settings.querySelector("button")!;
     const status = f.settings.querySelector("[role=status]")!;
     assert.equal(status.textContent, "Signed out. Sign in to use Copilot.");
-    assert.equal(signIn.hidden, false); assert.equal(signOut.hidden, true);
+    assert.deepEqual(Array.from(f.settings.querySelectorAll("button"), button => button.textContent), ["Sign in"]);
     signIn.click();
     assert.deepEqual(f.calls, ["signIn"]);
     f.update({ pending: true });
@@ -79,33 +79,47 @@ describe("Copilot authentication controls", () => {
     f.update({ authentication: "signed-in", pending: false, status: { kind: "Normal", busy: false } });
     assert.equal(status.textContent, "Signed in — Ready");
     assert.equal(f.bar.textContent, "Copilot: normal");
-    assert.equal(signIn.hidden, true); assert.equal(signOut.hidden, false);
+    assert.equal(signIn.isConnected, false);
+    const signOut = f.settings.querySelector("button")!;
+    assert.deepEqual(Array.from(f.settings.querySelectorAll("button"), button => button.textContent), ["Sign out"]);
     signOut.click();
     assert.deepEqual(f.calls, ["signIn", "signOut"]);
     f.update({ status: { kind: "Warning", busy: true } });
-    assert.equal(signOut.hidden, false);
+    assert.equal(f.settings.querySelector("button"), signOut);
     assert.equal(status.textContent, "Signed in — Temporary service issue — Copilot is busy");
     disposeBar(); disposeSettings(); f.dom.window.close();
   });
 
-  it("hides both actions when authentication is unknown and disables them offline", () => {
+  it("attaches only the relevant action despite host CSS, and disables it offline or pending", () => {
     const f = fixture({ status: { kind: "Error", busy: false } });
+    const style = f.dom.window.document.createElement("style");
+    style.textContent = "button { display: inline-flex; }";
+    f.dom.window.document.head.append(style);
     const dispose = bindAuthSettings(f.settings, f.auth);
-    const buttons = Array.from(f.settings.querySelectorAll("button"));
+    const labels = () => Array.from(f.settings.querySelectorAll("button"), button => button.textContent);
     assert.match(f.settings.textContent!, /Authentication status unknown — Copilot access problem/);
-    assert.ok(buttons.every(button => button.hidden && !button.disabled));
-    f.update({ authentication: "signed-out" });
-    assert.equal(buttons[0].hidden, false);
-    assert.equal(buttons[1].hidden, true);
-    f.update({ authentication: "signed-in" });
-    assert.equal(buttons[0].hidden, true);
-    assert.equal(buttons[1].hidden, false);
+    assert.deepEqual(labels(), []);
+    for (const authentication of ["signed-out", "signed-in", "unknown", "signed-in", "signed-out"] as const) {
+      f.update({ authentication, available: true, pending: false });
+      assert.deepEqual(labels(), authentication === "unknown" ? []
+        : [authentication === "signed-out" ? "Sign in" : "Sign out"]);
+      const button = f.settings.querySelector("button");
+      if (!button) continue;
+      assert.equal(button.disabled, false);
+      assert.equal(f.dom.window.getComputedStyle(button).display, "inline-flex");
+      button.focus();
+      f.update({ status: { kind: "Warning", busy: true } });
+      assert.equal(f.dom.window.document.activeElement, button);
+      for (const patch of [{ pending: true }, { pending: false, available: false }]) {
+        f.update(patch);
+        assert.equal(f.settings.querySelector("button"), button);
+        assert.equal(button.disabled, true);
+        button.click();
+      }
+      assert.match(f.settings.textContent!, /unavailable or starting/);
+    }
     f.update({ authentication: "unknown" });
-    assert.ok(buttons.every(button => button.hidden));
-    f.update({ available: false });
-    assert.match(f.settings.textContent!, /unavailable or starting/);
-    assert.ok(buttons.every(button => button.disabled));
-    for (const button of buttons) button.click();
+    assert.deepEqual(labels(), []);
     assert.deepEqual(f.calls, []);
     dispose(); f.dom.window.close();
   });
@@ -138,6 +152,9 @@ describe("Copilot authentication controls", () => {
     const disposeBar = bindAuthStatusBar(f.bar, f.auth);
     const disposeSettings = bindAuthSettings(f.settings, f.auth);
     const signIn = f.settings.querySelector("button")!;
+    f.update({ authentication: "signed-in" });
+    const signOut = f.settings.querySelector("button")!;
+    assert.equal(signIn.isConnected, false);
     assert.equal(f.listeners.size, 2);
     disposeBar(); disposeSettings();
     assert.equal(f.listeners.size, 0);
@@ -145,7 +162,7 @@ describe("Copilot authentication controls", () => {
     const oldText = f.bar.textContent;
     f.update({ authentication: "signed-in" });
     assert.equal(f.bar.textContent, oldText);
-    f.bar.click(); signIn.click();
+    f.bar.click(); signIn.click(); signOut.click();
     assert.deepEqual(f.calls, []);
     // Reopening settings creates a single fresh section reflecting the latest state.
     const disposeAgain = bindAuthSettings(f.settings, f.auth);

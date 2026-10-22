@@ -77,10 +77,10 @@ export function bindAuthSettings(container: HTMLElement, auth: Controls): () => 
   status.setAttribute("role", "status");
   const controls = row.appendChild(document.createElement("div"));
   controls.className = "setting-item-control";
-  const signIn = controls.appendChild(document.createElement("button"));
+  const signIn = document.createElement("button");
   signIn.textContent = "Sign in";
   signIn.className = "mod-cta";
-  const signOut = controls.appendChild(document.createElement("button"));
+  const signOut = document.createElement("button");
   signOut.textContent = "Sign out";
   const onSignIn = () => { void auth.signIn(); };
   const onSignOut = () => { void auth.signOut(); };
@@ -89,10 +89,14 @@ export function bindAuthSettings(container: HTMLElement, auth: Controls): () => 
   container.append(heading, row);
   const unsubscribe = auth.subscribe(state => {
     status.textContent = description(state);
-    // Offer only the action appropriate to the known authentication state.
-    signIn.hidden = state.authentication !== "signed-out";
-    signOut.hidden = state.authentication !== "signed-in";
     signIn.disabled = signOut.disabled = !state.available || state.pending;
+    // Obsidian's button display rule overrides HTML `hidden`; detach irrelevant actions.
+    const button = state.authentication === "signed-out" ? signIn
+      : state.authentication === "signed-in" ? signOut : undefined;
+    if (button !== signIn) signIn.remove();
+    if (button !== signOut) signOut.remove();
+    // Leave an already-attached button in place so health updates preserve focus.
+    if (button && button.parentElement !== controls) controls.append(button);
   });
   return () => {
     unsubscribe();
