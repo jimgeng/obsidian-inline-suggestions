@@ -27,6 +27,7 @@ function fixture(options: {
   hangShutdown?: boolean;
   ignoreKill?: boolean;
   configureConnection?: (rpc: MessageConnection) => () => void;
+  onReady?: () => void;
 } = {}) {
   const children: (ChildProcessWithoutNullStreams & { kills: (string | undefined)[] })[] = [];
   const messages: { method: string; params?: any }[] = [];
@@ -67,7 +68,7 @@ function fixture(options: {
     },
     connect: child => createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin)),
   };
-  const manager = new CopilotServerManager({ nodePath: "", vaultPath: process.cwd(), editorVersion: "1.13.0", pluginVersion: "0.1.0", onFailure: message => failures.push(message), configureConnection: options.configureConnection }, host);
+  const manager = new CopilotServerManager({ nodePath: "", vaultPath: process.cwd(), editorVersion: "1.13.0", pluginVersion: "0.1.0", onFailure: message => failures.push(message), configureConnection: options.configureConnection, onReady: options.onReady }, host);
   managers.push(manager);
   return { manager, host, children, messages, failures };
 }
@@ -110,6 +111,19 @@ describe("Copilot server lifecycle (mock process, real JSON-RPC streams)", () =>
     await f.manager.stop();
     await f.manager.stop();
     assert.equal(released, 2);
+  });
+  it("notifies controls only after the connection is ready", async () => {
+    let ready = 0;
+    const f = fixture({ onReady: () => {
+      assert.ok(f.manager.connection);
+      ready++;
+    } });
+    assert.equal(ready, 0);
+    await f.manager.start();
+    assert.equal(ready, 1);
+    await f.manager.stop();
+    await f.manager.start();
+    assert.equal(ready, 2);
   });
   it("can retire an authentication session and start a fresh process after it exits", async () => {
     const f = fixture();

@@ -250,6 +250,53 @@ describe("Copilot authentication (mock server, real JSON-RPC connection)", () =>
     assert.deepEqual(f.calls, []);
     assert.equal(f.notices.length, 2);
   });
+  it("tracks authentication independently from temporary server health", async () => {
+    const f = fixture();
+    assert.equal(f.auth.state.authentication, "unknown");
+    await f.peer.sendNotification("didChangeStatus", { kind: "Normal", busy: false });
+    await until(() => f.auth.state.authentication === "signed-in");
+    for (const kind of ["Warning", "Inactive", "Error"]) {
+      await f.peer.sendNotification("didChangeStatus", { kind, busy: false, message: "Temporary service problem" });
+      await until(() => f.auth.state.status?.kind === kind);
+      assert.equal(f.auth.state.authentication, "signed-in");
+    }
+    await f.peer.sendNotification("didChangeStatus", { kind: "Error", busy: false, message: "You are not signed into GitHub." });
+    await until(() => f.auth.state.authentication === "signed-out");
+    await f.peer.sendNotification("didChangeStatus", { kind: "Warning", busy: true });
+    await until(() => f.auth.state.status?.kind === "Warning");
+    assert.equal(f.auth.state.authentication, "signed-out");
+    f.detach();
+    assert.equal(f.auth.state.authentication, "unknown");
+    assert.equal(f.auth.state.available, false);
+  });
+  it("publishes pending and completed authentication state to subscribed controls", async () => {
+    const f = fixture();
+    const states: typeof f.auth.state[] = [];
+    const unsubscribe = f.auth.subscribe(state => states.push(state));
+    await f.auth.signIn();
+    assert.equal(f.auth.state.pending, true);
+    assert.equal(f.auth.state.authentication, "signed-out");
+    await f.auth.signOut();
+    assert.equal(f.auth.state.pending, false);
+    assert.equal(f.auth.state.authentication, "signed-out");
+    assert.ok(states.some(state => state.pending));
+    f.peer.onRequest("signIn", () => ({ status: "AlreadySignedIn" }));
+    await f.auth.signIn();
+    assert.equal(f.auth.state.authentication, "signed-in");
+    assert.equal(f.auth.state.pending, false);
+    const count = states.length;
+    unsubscribe();
+    f.auth.connectionChanged();
+    assert.equal(states.length, count);
+  });
+  it("does not infer signed-out status from a generic server error", async () => {
+    const f = fixture();
+    await f.peer.sendNotification("didChangeStatus", { kind: "Error", busy: false, message: "Quota exceeded" });
+    await until(() => !!f.auth.state.status);
+    assert.equal(f.auth.state.authentication, "unknown");
+    await f.peer.sendNotification("didChangeStatus", { kind: "Error", busy: false, command: { command: "github.copilot.signIn" } });
+    await until(() => f.auth.state.authentication === "signed-out");
+  });
   it("coalesces repeated sign-in commands", async () => {
     const f = fixture();
     await Promise.all([f.auth.signIn(), f.auth.signIn()]);

@@ -2,6 +2,7 @@ import { apiVersion, Editor, FileSystemAdapter, Notice, Plugin } from "obsidian"
 import { CopilotServerManager } from "./copilot/server-manager";
 import { CopilotAuth } from "./copilot/auth";
 import { CopilotSignInModal } from "./copilot/auth-modal";
+import { bindAuthStatusBar } from "./copilot/auth-controls";
 import { NodePathSettingTab } from "./settings";
 import { EditorView } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
@@ -104,11 +105,12 @@ export default class InlineSuggestionsPlugin extends Plugin {
     if (this.unloaded) return;
     const nodePath = data && typeof data === "object" && "nodePath" in data && typeof data.nodePath === "string"
       ? data.nodePath : "";
-    this.addSettingTab(new NodePathSettingTab(this.app, this, nodePath, async value => {
-      await this.saveData({ nodePath: value });
-    }));
+    const saveNodePath = async (value: string) => { await this.saveData({ nodePath: value }); };
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) return;
+    if (!(adapter instanceof FileSystemAdapter)) {
+      this.addSettingTab(new NodePathSettingTab(this.app, this, nodePath, saveNodePath));
+      return;
+    }
     const statusBar = this.addStatusBarItem();
     statusBar.setText("Copilot: starting…");
     const auth = new CopilotAuth({
@@ -116,11 +118,6 @@ export default class InlineSuggestionsPlugin extends Plugin {
       resetSession: async () => {
         await this.server?.stop();
         if (!this.unloaded) await this.server?.start();
-      },
-      status: status => {
-        if (!this.unloaded) statusBar.setText(status
-          ? `Copilot: ${status.kind}${status.busy ? " (busy)" : ""}`
-          : "Copilot: unavailable");
       },
       notice: message => { if (!this.unloaded) new Notice(message, 7000); },
       openUrl: async url => { window.open(url, "_blank", "noopener,noreferrer"); },
@@ -130,6 +127,10 @@ export default class InlineSuggestionsPlugin extends Plugin {
         return modal;
       },
     });
+    this.register(bindAuthStatusBar(statusBar, auth));
+    const settings = new NodePathSettingTab(this.app, this, nodePath, saveNodePath, auth);
+    this.addSettingTab(settings);
+    this.register(() => settings.hide());
     this.addCommand({ id: "copilot-sign-in", name: "Sign in to Copilot", callback: () => { void auth.signIn(); } });
     this.addCommand({ id: "copilot-sign-out", name: "Sign out of Copilot", callback: () => { void auth.signOut(); } });
     let notified = false;
@@ -139,8 +140,9 @@ export default class InlineSuggestionsPlugin extends Plugin {
       editorVersion: apiVersion,
       pluginVersion: this.manifest.version,
       configureConnection: rpc => auth.attach(rpc),
+      onReady: () => auth.connectionChanged(),
       onFailure: message => {
-        if (!this.unloaded) statusBar.setText("Copilot: unavailable");
+        auth.connectionChanged();
         if (!notified && !this.unloaded) { notified = true; new Notice(message, 7000); }
       },
     });

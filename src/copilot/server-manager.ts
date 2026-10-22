@@ -10,6 +10,7 @@ export interface ServerOptions {
   editorVersion: string;
   pluginVersion: string;
   onFailure(message: string): void;
+  onReady?(): void;
   /** Install client handlers before initialize; dispose them with this connection. */
   configureConnection?(rpc: MessageConnection): () => void;
 }
@@ -143,6 +144,7 @@ export class CopilotServerManager {
       await deadline(Promise.race([rpc.sendNotification("workspace/didChangeConfiguration", { settings: { telemetry: { telemetryLevel: "off" } } }), cancelled]), this.host.initializeTimeoutMs);
       if (!this.current(generation) || session.failed) throw new Error("Server startup cancelled.");
       session.ready = true;
+      this.options.onReady?.();
     } catch {
       if (session) await this.dispose(session, false);
       if (this.current(generation)) this.options.onFailure("Copilot server unavailable. Check Node path and the global @github/copilot-language-server installation.");

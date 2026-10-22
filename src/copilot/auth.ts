@@ -2,11 +2,17 @@ import { CancellationTokenSource, MessageConnection } from "vscode-jsonrpc";
 
 export type StatusKind = "Normal" | "Error" | "Warning" | "Inactive";
 export interface CopilotStatus { kind: StatusKind; busy: boolean }
+export interface AuthState {
+  authentication: "unknown" | "signed-in" | "signed-out";
+  status?: CopilotStatus;
+  pending: boolean;
+  available: boolean;
+}
 export interface AuthHost {
   ready(): boolean;
   /** Stop the old process (including device-code polling), then start a fresh one. */
   resetSession(): Promise<void>;
-  status(status: CopilotStatus | undefined): void;
+  status?(status: CopilotStatus | undefined): void;
   notice(message: string): void;
   openUrl(url: string): Promise<void>;
   showCode(code: string, proceed: () => void, cancel: () => void): { close(): void };
@@ -27,19 +33,47 @@ export class CopilotAuth {
   private hinted = false;
   private retiring?: Promise<void>;
   private action = 0;
+  private authentication: AuthState["authentication"] = "unknown";
+  private serverStatus?: CopilotStatus;
+  private readonly listeners = new Set<(state: AuthState) => void>();
+
+  get state(): AuthState {
+    return {
+      authentication: this.authentication, status: this.serverStatus,
+      pending: !!this.operation || !!this.retiring, available: !!this.rpc && this.host.ready(),
+    };
+  }
+
+  subscribe(listener: (state: AuthState) => void): () => void {
+    this.listeners.add(listener);
+    listener(this.state);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  connectionChanged(): void {
+    for (const listener of this.listeners) listener(this.state);
+  }
 
   constructor(private readonly host: AuthHost) {}
 
   attach(rpc: MessageConnection): () => void {
     this.cancel(false);
     this.rpc = rpc;
+    this.authentication = "unknown";
+    this.serverStatus = undefined;
+    this.connectionChanged();
     const status = rpc.onNotification("didChangeStatus", (value: unknown) => {
       if (this.rpc !== rpc || !value || typeof value !== "object") return;
       const data = value as { kind?: unknown; busy?: unknown; message?: unknown; command?: { command?: unknown } };
       if (!["Normal", "Error", "Warning", "Inactive"].includes(String(data.kind))) return;
-      this.host.status({ kind: data.kind as StatusKind, busy: data.busy === true });
+      this.serverStatus = { kind: data.kind as StatusKind, busy: data.busy === true };
+      this.host.status?.(this.serverStatus);
       const needsSignIn = data.command?.command === "github.copilot.signIn"
         || (typeof data.message === "string" && /not signed (in|into)|signed out|sign in again/i.test(data.message));
+      if (needsSignIn) this.authentication = "signed-out";
+      else if (data.kind === "Normal") this.authentication = "signed-in";
+      // Other errors/warnings describe server health, not necessarily authentication.
+      this.connectionChanged();
       if (!this.hinted && needsSignIn) {
         this.hinted = true;
         this.host.notice("Copilot is not signed in. Use the ‘Sign in to Copilot’ command to connect.");
@@ -69,7 +103,10 @@ export class CopilotAuth {
       if (this.rpc === rpc) {
         this.cancel(false);
         this.rpc = undefined;
-        this.host.status(undefined);
+        this.serverStatus = undefined;
+        this.authentication = "unknown";
+        this.host.status?.(undefined);
+        this.connectionChanged();
       }
     };
   }
@@ -80,12 +117,14 @@ export class CopilotAuth {
     if (!rpc || this.operation || action !== this.action) return;
     const op: Operation = { rpc, cancellation: new CancellationTokenSource(), executing: false, signIn: true };
     this.operation = op;
+    this.connectionChanged();
     try {
       const result = await rpc.sendRequest<{
         status?: string; userCode?: string; command?: { command: string; arguments?: unknown[] };
       }>("signIn", {}, op.cancellation.token);
       if (!this.current(op)) return;
       if (result?.status === "AlreadySignedIn") {
+        this.authentication = "signed-in";
         this.host.notice("Copilot is already signed in.");
         this.finish(op);
         return;
@@ -95,6 +134,8 @@ export class CopilotAuth {
         || (result.command.arguments !== undefined && !Array.isArray(result.command.arguments))) {
         throw new Error("Invalid sign-in response");
       }
+      this.authentication = "signed-out";
+      this.connectionChanged();
       const command = result.command;
       op.modal = this.host.showCode(result.userCode, () => {
         if (this.current(op) && !op.executing) void this.execute(op, command);
@@ -114,9 +155,13 @@ export class CopilotAuth {
     if (!rpc || action !== this.action) return;
     const op: Operation = { rpc, cancellation: new CancellationTokenSource(), executing: false, signIn: false };
     this.operation = op;
+    this.connectionChanged();
     try {
       await rpc.sendRequest("signOut", {}, op.cancellation.token);
-      if (this.current(op)) this.host.notice("Signed out of Copilot.");
+      if (this.current(op)) {
+        this.authentication = "signed-out";
+        this.host.notice("Signed out of Copilot.");
+      }
     } catch {
       if (this.current(op)) this.host.notice("Copilot sign-out failed. Please try again.");
     } finally { this.finish(op); }
@@ -151,6 +196,7 @@ export class CopilotAuth {
     this.operation = undefined;
     op.cancellation.dispose();
     op.modal?.close();
+    this.connectionChanged();
   }
 
   private cancel(retire = true): void {
@@ -165,7 +211,11 @@ export class CopilotAuth {
       // cancellation. Only terminating that process reliably abandons the flow.
       this.retiring = Promise.resolve().then(() => this.host.resetSession()).catch(() => {
         this.host.notice("Copilot server could not restart. Reload the plugin before signing in again.");
-      }).finally(() => { this.retiring = undefined; });
+      }).finally(() => {
+        this.retiring = undefined;
+        this.connectionChanged();
+      });
     }
+    this.connectionChanged();
   }
 }
