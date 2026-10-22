@@ -66,6 +66,7 @@ export class CopilotServerManager {
   }
 
   start(): Promise<void> {
+    // One active generation owns startup and any bounded crash recovery.
     if (this.active) return this.starting ?? Promise.resolve();
     this.active = true;
     const generation = ++this.generation;
@@ -74,6 +75,7 @@ export class CopilotServerManager {
   }
 
   async stop(): Promise<void> {
+    // Invalidate pending discovery/startup/recovery before disposing the current session.
     this.active = false;
     ++this.generation;
     const session = this.session;
@@ -101,7 +103,6 @@ export class CopilotServerManager {
       // Attach immediately so disposal outside an active initialize cannot reject unhandled.
       void cancelled.catch(() => {});
       child.once("exit", () => { exited = true; if (session) session.exited = true; resolveExit(); });
-      // Install process listeners before connection creation/listen.
       const fail = () => { if (session) this.failed(session, generation); };
       child.on("error", fail);
       child.on("exit", fail);
@@ -148,9 +149,8 @@ export class CopilotServerManager {
     session.ready = false;
     session.cancel();
     if (!this.current(generation) || !wasReady) return;
-    // Startup failures are reported/cleaned up by launch's catch block.
-    // Only a successfully initialized server gets one recovery attempt. Never
-    // reset this budget on success: repeated crashes must not create a loop.
+    // launch owns startup failures; only a ready session earns recovery.
+    // The restart budget is never reset on success, preventing a crash loop.
     const retry = wasReady && !this.restarted;
     if (retry) this.restarted = true;
     void this.dispose(session, false).then(() => {
@@ -161,6 +161,7 @@ export class CopilotServerManager {
   }
 
   private dispose(session: Session, graceful: boolean): Promise<void> {
+    // All shutdown paths share one cleanup promise; cancellation prevents late readiness.
     if (session.cleanup) return session.cleanup;
     const wasReady = session.ready;
     session.ready = false;
@@ -184,11 +185,16 @@ export class CopilotServerManager {
   }
 
   private async terminate(child: ChildProcessWithoutNullStreams, exit: Promise<void>, exited: () => boolean): Promise<void> {
+    // Signals request termination; wait for exit, but bound both waits if exit never arrives.
     try {
       if (!exited()) {
         child.kill();
         try { await deadline(exit, this.host.timeoutMs); }
-        catch { child.kill("SIGKILL"); }
+        catch {
+          child.kill("SIGKILL");
+          try { await deadline(exit, this.host.timeoutMs); }
+          catch { /* No exit confirmation; still release streams after the deadline. */ }
+        }
       }
     } finally {
       child.stdin.destroy();

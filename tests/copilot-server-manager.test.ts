@@ -116,6 +116,46 @@ describe("Copilot server lifecycle (mock process, real JSON-RPC streams)", () =>
     assert.ok(f.children[0].stdout.destroyed);
     assert.ok(f.children[0].stderr.destroyed);
   });
+  it("waits for asynchronous exit after SIGKILL before finishing cleanup", async () => {
+    const f = fixture({ hangShutdown: true });
+    f.host.timeoutMs = 100;
+    await f.manager.start();
+    const child = f.children[0];
+    child.kill = (signal?: NodeJS.Signals | number) => {
+      child.kills.push(signal as string | undefined);
+      return true;
+    };
+    let stopped = false;
+    const stopping = f.manager.stop().then(() => { stopped = true; });
+    await until(() => child.kills.includes("SIGKILL"));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stopped, false);
+    assert.equal(child.stdin.destroyed, false);
+    child.emit("exit", null, "SIGKILL");
+    await stopping;
+    assert.equal(stopped, true);
+    assert.deepEqual(child.kills, [undefined, "SIGKILL"]);
+    assert.ok(child.stdin.destroyed);
+    assert.ok(child.stdout.destroyed);
+    assert.ok(child.stderr.destroyed);
+    assert.deepEqual(f.failures, []);
+  });
+  it("bounds forced termination when no exit event arrives", async () => {
+    const f = fixture({ hangShutdown: true });
+    await f.manager.start();
+    const child = f.children[0];
+    child.kill = (signal?: NodeJS.Signals | number) => {
+      child.kills.push(signal as string | undefined);
+      return true;
+    };
+    await f.manager.stop();
+    assert.deepEqual(child.kills, [undefined, "SIGKILL"]);
+    assert.ok(child.stdin.destroyed);
+    assert.ok(child.stdout.destroyed);
+    assert.ok(child.stderr.destroyed);
+    assert.equal(f.manager.connection, undefined);
+    assert.deepEqual(f.failures, []);
+  });
   it("restarts a crashed ready server only once", async () => {
     const f = fixture();
     await f.manager.start();
