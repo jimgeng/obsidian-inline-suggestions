@@ -2,9 +2,11 @@
   "name": "obsidian-inline-suggestions",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Inline Markdown suggestions for Obsidian.",
   "scripts": {
     "dev": "node esbuild.config.mjs",
+    "version": "node scripts/version.mjs",
     "test": "mocha",
     "test:watch": "mocha --watch",
     "typecheck": "tsc --noEmit",
