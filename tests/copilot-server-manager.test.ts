@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, it } from "mocha";
 import { createMessageConnection, MessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
+import { DiscoveryError, discoveryMessages, DiscoveryErrorCode } from "../src/copilot/discovery";
 import { CopilotServerManager, ServerHost } from "../src/copilot/server-manager";
 
 const managers: CopilotServerManager[] = [];
@@ -288,6 +289,69 @@ describe("Copilot server lifecycle (mock process, real JSON-RPC streams)", () =>
       assert.equal(f.manager.connection, undefined);
       assert.equal(f.children[0].kills.length, 1);
       assert.equal(f.failures.length, blocked === "initialized" ? 1 : 0);
+    });
+  }
+  for (const code of Object.keys(discoveryMessages) as DiscoveryErrorCode[]) {
+    it(`preserves the safe discovery category ${code}`, async () => {
+      const f = fixture();
+      f.host.discover = async () => {
+        const error = new DiscoveryError(code);
+        error.message = "private path token stderr note text";
+        throw error;
+      };
+      await f.manager.start();
+      assert.deepEqual(f.failures, [discoveryMessages[code]]);
+      assert.equal(f.children.length, 0);
+    });
+  }
+  for (const stage of ["spawn", "transport", "clientHandlers", "initialize", "configuration", "readyCallback"] as const) {
+    it(`reports a sanitized ${stage} failure and retires startup without retry`, async () => {
+      const secret = "private /vault/note.md token=secret stderr note text";
+      const fail = () => { throw new Error(secret); };
+      let released = 0;
+      const f = fixture({
+        configureConnection: stage === "clientHandlers" ? fail : () => () => { released++; },
+        onReady: stage === "readyCallback" ? fail : undefined,
+      });
+      if (stage === "spawn") f.host.spawn = fail;
+      else if (stage === "transport") f.host.connect = fail;
+      else if (stage === "initialize" || stage === "configuration") {
+        const connect = f.host.connect;
+        f.host.connect = child => {
+          const rpc = connect(child);
+          (child.stderr as PassThrough).write(secret);
+          return new Proxy(rpc, {
+            get(target, key) {
+              if (stage === "initialize" && key === "sendRequest") return fail;
+              if (stage === "configuration" && key === "sendNotification") {
+                return (method: string, params: unknown) => {
+                  if (method === "workspace/didChangeConfiguration") return Promise.reject(new Error(secret));
+                  return target.sendNotification(method, params);
+                };
+              }
+              const value = Reflect.get(target, key);
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          });
+        };
+      }
+      await f.manager.start();
+      assert.equal(f.failures.length, 1);
+      assert.ok(!f.failures[0].includes(secret));
+      const expected = { spawn: /could not start/, transport: /connection failed/, clientHandlers: /client handler setup failed/, initialize: /initialization failed/, configuration: /configuration failed/, readyCallback: /ready callback failed/ };
+      assert.match(f.failures[0], expected[stage]);
+      if (stage === "clientHandlers" || stage === "readyCallback") {
+        assert.match(f.failures[0], /integration issue/);
+        assert.doesNotMatch(f.failures[0], /installation/);
+      }
+      assert.equal(f.manager.connection, undefined);
+      assert.equal(f.children.length, stage === "spawn" ? 0 : 1);
+      for (const child of f.children) {
+        assert.ok(child.stdin.destroyed && child.stdout.destroyed && child.stderr.destroyed);
+      }
+      await f.manager.stop();
+      assert.equal(released, ["initialize", "configuration", "readyCallback"].includes(stage) ? 1 : 0);
+      assert.equal(f.failures.length, 1);
     });
   }
   it("fails unobtrusively on discovery errors, without spawning", async () => {

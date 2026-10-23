@@ -29,7 +29,14 @@ export interface AuthHost {
   showCode(code: string, proceed: () => void, cancel: () => void): { close(): void };
 }
 
+export interface AuthTimeouts {
+  rpcMs: number;
+  deviceAuthorizationMs: number;
+}
+
 interface Operation {
+  timer?: ReturnType<typeof setTimeout>;
+  interrupt?: () => void;
   rpc: MessageConnection;
   cancellation: CancellationTokenSource;
   modal?: { close(): void };
@@ -71,7 +78,9 @@ export class CopilotAuth {
     for (const listener of this.listeners) listener(this.state);
   }
 
-  constructor(private readonly host: AuthHost) {}
+  constructor(private readonly host: AuthHost, private readonly timeouts: AuthTimeouts = {
+    rpcMs: 15_000, deviceAuthorizationMs: 10 * 60_000,
+  }) {}
 
   attach(rpc: MessageConnection): () => void {
     this.cancel(false);
@@ -139,10 +148,11 @@ export class CopilotAuth {
     const op: Operation = { rpc, cancellation: new CancellationTokenSource(), executing: false, signIn: true };
     this.operation = op;
     this.connectionChanged();
+    this.deadline(op, this.timeouts.rpcMs);
     try {
-      const result = await rpc.sendRequest<{
+      const result = await this.request<{
         status?: string; userCode?: string; command?: { command: string; arguments?: unknown[] };
-      }>("signIn", {}, op.cancellation.token);
+      }>(op, "signIn", {});
       if (!this.current(op)) return;
       if (result?.status === "AlreadySignedIn") {
         this.authentication = "signed-in";
@@ -157,6 +167,8 @@ export class CopilotAuth {
       }
       this.authentication = "signed-out";
       this.connectionChanged();
+      // One device deadline covers both waiting at the modal and authorization.
+      this.deadline(op, this.timeouts.deviceAuthorizationMs);
       const command = result.command;
       op.modal = this.host.showCode(result.userCode, () => {
         if (this.current(op) && !op.executing) void this.execute(op, command);
@@ -177,8 +189,9 @@ export class CopilotAuth {
     const op: Operation = { rpc, cancellation: new CancellationTokenSource(), executing: false, signIn: false };
     this.operation = op;
     this.connectionChanged();
+    this.deadline(op, this.timeouts.rpcMs);
     try {
-      await rpc.sendRequest("signOut", {}, op.cancellation.token);
+      await this.request(op, "signOut", {});
       if (this.current(op)) {
         this.authentication = "signed-out";
         this.host.notice("Signed out of Copilot.");
@@ -191,9 +204,9 @@ export class CopilotAuth {
   private async execute(op: Operation, command: { command: string; arguments?: unknown[] }): Promise<void> {
     op.executing = true;
     try {
-      await op.rpc.sendRequest("workspace/executeCommand", {
+      await this.request(op, "workspace/executeCommand", {
         command: command.command, arguments: command.arguments ?? [],
-      }, op.cancellation.token);
+      });
       // didChangeStatus, not this response, is the source of status-bar truth.
     } catch {
       if (this.current(op)) {
@@ -201,6 +214,31 @@ export class CopilotAuth {
         this.cancel();
       }
     } finally { this.finish(op); }
+  }
+
+  private deadline(op: Operation, milliseconds: number): void {
+    clearTimeout(op.timer);
+    op.timer = setTimeout(() => {
+      if (!this.current(op)) return;
+      this.host.notice(op.signIn
+        ? "Copilot sign-in failed or expired. Please try again."
+        : "Copilot sign-out failed. Please try again.");
+      this.cancel(true, true);
+    }, milliseconds);
+  }
+
+  /** Settle locally even when the server ignores the cancellation notification. */
+  private async request<T>(op: Operation, method: string, params: object): Promise<T> {
+    let interrupt!: () => void;
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        interrupt = () => reject(new Error("Authentication operation cancelled"));
+        op.interrupt = interrupt;
+        op.rpc.sendRequest<T>(method, params, op.cancellation.token).then(resolve, reject);
+      });
+    } finally {
+      if (op.interrupt === interrupt) op.interrupt = undefined;
+    }
   }
 
   private async available(): Promise<MessageConnection | undefined> {
@@ -215,19 +253,29 @@ export class CopilotAuth {
   private finish(op: Operation): void {
     if (!this.current(op)) return;
     this.operation = undefined;
+    clearTimeout(op.timer);
     op.cancellation.dispose();
     op.modal?.close();
     this.connectionChanged();
   }
 
-  private cancel(retire = true): void {
+  private cancel(retire = true, timedOut = false): void {
     const op = this.operation;
     if (!op) return;
     this.operation = undefined;
+    clearTimeout(op.timer);
+    op.interrupt?.();
     op.cancellation.cancel();
     op.cancellation.dispose();
     op.modal?.close();
-    if (retire && op.signIn && !this.retiring) {
+    if (timedOut) {
+      // Never trust late responses or status from this process, even if restart fails.
+      this.rpc = undefined;
+      this.authentication = "unknown";
+      this.serverStatus = undefined;
+      this.host.status?.(undefined);
+    }
+    if (retire && (op.signIn || timedOut) && !this.retiring) {
       // Legacy signIn starts polling before executeCommand and ignores RPC
       // cancellation. Only terminating that process reliably abandons the flow.
       this.retiring = Promise.resolve().then(() => this.host.resetSession()).catch(() => {

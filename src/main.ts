@@ -8,7 +8,7 @@ import { PluginSettingsStore } from "./plugin-settings";
 import { EditorView } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
 import { acceptGhost, ghostTextExtension } from "./ghost-text";
-import { createCompletionIntegration, setCompletionEditorInfoField } from "./completion-extension";
+import { createCompletionIntegration } from "./completion-extension";
 import { CopilotCompletionProvider } from "./copilot/completion-provider";
 import { FakeCompletionProvider } from "./fake-provider";
 
@@ -41,9 +41,18 @@ export default class InlineSuggestionsPlugin extends Plugin {
         return { tabSize: view.state.tabSize, insertSpaces: vault.getConfig?.("useTab") !== true };
       },
       enabled,
-    ), enabled);
+      { onStalled: rpc => {
+        if (this.server?.connection === rpc && !this.unloaded) {
+          void this.server.stop()
+            .then(() => { if (!this.unloaded) return this.server?.start(); })
+            .catch(() => { if (!this.unloaded) new Notice("Copilot server could not restart. Reload the plugin to try again.", 7000); });
+        }
+      } },
+    ), view => {
+      const info = view.state.field(editorInfoField, false);
+      return typeof info?.file?.path === "string" && info.file.path.toLowerCase().endsWith(".md");
+    }, enabled);
     this.register(() => completions.dispose());
-    setCompletionEditorInfoField(editorInfoField);
     this.registerEditorExtension(ghostTextExtension);
     this.registerEditorExtension(completions.extension);
     // this.addCommand({

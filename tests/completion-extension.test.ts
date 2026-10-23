@@ -5,7 +5,7 @@ import { Compartment, EditorSelection, EditorState, Extension, StateEffect, Stat
 import { EditorView } from "@codemirror/view";
 import { CompletionProvider } from "../src/completion-provider";
 import { PluginSettingsStore } from "../src/plugin-settings";
-import { createCompletionExtension, createCompletionIntegration, setCompletionEditorInfoField } from "../src/completion-extension";
+import { createCompletionExtension, createCompletionIntegration } from "../src/completion-extension";
 import { acceptGhost, dismissGhost, ghostField, ghostTextExtension, showGhost } from "../src/ghost-text";
 
 const wait = (ms = 360) => new Promise(resolve => setTimeout(resolve, ms));
@@ -19,7 +19,6 @@ describe("automatic completion extension", () => {
   before(() => {
     dom = new JSDOM("<!doctype html><body></body>", { pretendToBeVisual: true });
     fileInfo = StateField.define({ create: () => ({ file: { path: "test.md" } }), update: value => value });
-    setCompletionEditorInfoField(fileInfo);
     dom.window.Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
     dom.window.Range.prototype.getBoundingClientRect = () => new dom.window.DOMRect();
     const globals: Record<string, unknown> = { window: dom.window, document: dom.window.document,
@@ -37,13 +36,14 @@ describe("automatic completion extension", () => {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
   }});
 
+  const isMarkdownEditor = (view: EditorView) => view.state.field(fileInfo, false)?.file.path.toLowerCase().endsWith(".md") === true;
+
   function create(provider: CompletionProvider, includeFileInfo = true, completion?: Extension): EditorView {
-    const extensions = [ghostTextExtension, completion ?? createCompletionExtension(provider),
+    const extensions = [ghostTextExtension, completion ?? createCompletionExtension(provider, isMarkdownEditor),
       EditorView.exceptionSink.of(error => { throw error; })];
     if (includeFileInfo) extensions.push(fileInfo);
     // Obsidian adds editorInfoField to Markdown editor views; omit it to test rejection.
-    setCompletionEditorInfoField(includeFileInfo ? fileInfo : null);
-    const view = new EditorView({ state: EditorState.create({ doc: "hello", selection: { anchor: 5 }, extensions: [fileInfo, ...extensions] }),
+    const view = new EditorView({ state: EditorState.create({ doc: "hello", selection: { anchor: 5 }, extensions }),
       parent: dom.window.document.body });
     views.push(view); view.focus(); return view;
   }
@@ -141,7 +141,7 @@ describe("automatic completion extension", () => {
     let calls = 0;
     const readonly = new Compartment();
     const view = new EditorView({ state: EditorState.create({ doc: "hello", selection: { anchor: 5 },
-      extensions: [fileInfo, ghostTextExtension, createCompletionExtension({ complete: async () => { calls++; return "x"; } }), readonly.of([])] }),
+      extensions: [fileInfo, ghostTextExtension, createCompletionExtension({ complete: async () => { calls++; return "x"; } }, isMarkdownEditor), readonly.of([])] }),
       parent: dom.window.document.body });
     views.push(view); view.focus(); type(view, "!");
     view.dispatch({ effects: readonly.reconfigure(EditorState.readOnly.of(true)) });
@@ -154,7 +154,7 @@ describe("automatic completion extension", () => {
     const integration = createCompletionIntegration(() => ({
       complete: (_context, signal) => new Promise<string>(resolve => requests.push({ signal, resolve })),
       close: async () => { closed++; },
-    }));
+    }), isMarkdownEditor);
     const unused = { complete: async () => null };
     const first = create(unused, true, integration.extension);
     const second = create(unused, true, integration.extension);
@@ -172,6 +172,20 @@ describe("automatic completion extension", () => {
     assert.equal(second.state.field(ghostField).suggestion?.text, " valid");
     integration.dispose(); first.destroy(); second.destroy();
     assert.equal(closed, 2);
+  });
+
+  it("keeps eligibility dependencies local to each integration", async () => {
+    let allowedCalls = 0, blockedCalls = 0;
+    const allowed = createCompletionIntegration(() => ({ complete: async () => { allowedCalls++; return "yes"; } }), isMarkdownEditor);
+    const blocked = createCompletionIntegration(() => ({ complete: async () => { blockedCalls++; return "no"; } }), () => false);
+    const first = create({ complete: async () => null }, true, allowed.extension);
+    const second = create({ complete: async () => null }, true, blocked.extension);
+    for (const view of [first, second]) Object.defineProperty(view, "hasFocus", { get: () => true });
+    type(first, "!"); type(second, "!");
+    await wait();
+    assert.equal(allowedCalls, 1);
+    assert.equal(blockedCalls, 0);
+    allowed.dispose(); blocked.dispose();
   });
 
   it("rejects non-Markdown hosts and multiple/nonempty selections", async () => {
@@ -197,7 +211,7 @@ describe("automatic completion extension", () => {
       opened++;
       return { complete: (_context, signal) => new Promise<string>(resolve => requests.push({ signal, resolve })),
         close: async () => { closed++; } };
-    }, () => enabled);
+    }, isMarkdownEditor, () => enabled);
     const unused = { complete: async () => { throw new Error("unexpected fallback"); } };
     const first = create(unused, true, integration.extension);
     type(first, "!"); await wait(); assert.equal(requests.length, 0);
@@ -227,7 +241,7 @@ describe("automatic completion extension", () => {
     const requests: { signal: AbortSignal; resolve: (text: string) => void }[] = [];
     const integration = createCompletionIntegration(() => ({
       complete: (_context, signal) => new Promise<string>(resolve => requests.push({ signal, resolve })),
-    }), () => settings.current.automaticSuggestions);
+    }), isMarkdownEditor, () => settings.current.automaticSuggestions);
     const unsubscribe = settings.subscribe(() => { if (!settings.current.automaticSuggestions) integration.invalidate(); });
     const unused = { complete: async () => null };
     const first = create(unused, true, integration.extension);
@@ -265,7 +279,7 @@ describe("automatic completion extension", () => {
       const provider: CompletionProvider = { complete: (_context, s) => {
         signal = s; return new Promise(r => { resolve = r; });
       } };
-      const integration = createCompletionIntegration(() => provider);
+      const integration = createCompletionIntegration(() => provider, isMarkdownEditor);
       const view = create(provider, true, integration.extension);
       type(view, "!"); await wait();
       if (action === "blur") { view.contentDOM.blur(); view.focus(); }
@@ -303,7 +317,7 @@ describe("automatic completion extension", () => {
   });
 
   it("shares demo cancellation with automatic work, Escape and plugin teardown", async () => {
-    const integration = createCompletionIntegration(() => ({ complete: async () => " real" }));
+    const integration = createCompletionIntegration(() => ({ complete: async () => " real" }), isMarkdownEditor);
     const view = create({ complete: async () => null }, true, integration.extension);
     const requests: { signal: AbortSignal; resolve: (text: string) => void }[] = [];
     const demo: CompletionProvider = { complete: (_context, signal) => new Promise<string>(resolve => requests.push({ signal, resolve })) };
