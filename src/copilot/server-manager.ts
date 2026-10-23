@@ -2,7 +2,19 @@ import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createMessageConnection, MessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
-import { discoverServer, ServerPaths } from "./discovery";
+import { discoverServer, DiscoveryError, discoveryMessages, ServerPaths } from "./discovery";
+
+const startupMessages = {
+  discovery: "Copilot installation discovery failed. Check Node.js, npm, and the global language server installation.",
+  spawn: "Copilot language server could not start. Check the Node.js and language server installation and process permissions.",
+  transport: "Copilot language server connection failed. Reload the plugin to try again.",
+  clientHandlers: "Copilot client handler setup failed. Reload the plugin; if this persists, report a plugin integration issue.",
+  initialize: "Copilot language server initialization failed or timed out. Reload the plugin to try again.",
+  configuration: "Copilot language server configuration failed or timed out. Reload the plugin to try again.",
+  readyCallback: "Copilot ready callback failed. Reload the plugin; if this persists, report a plugin integration issue.",
+} as const;
+
+type StartupStage = keyof typeof startupMessages;
 
 export interface ServerOptions {
   nodePath: string;
@@ -93,9 +105,12 @@ export class CopilotServerManager {
 
   private async launch(generation: number): Promise<void> {
     let session: Session | undefined;
+    let stage: StartupStage = "discovery";
+    let eventFailure: "spawn" | "transport" | undefined;
     try {
       const paths = await this.host.discover(this.options.nodePath);
       if (!this.current(generation)) return;
+      stage = "spawn";
       const child = this.host.spawn(paths, this.options.vaultPath);
       // stderr may contain personal/server data: drain it, but never log it.
       child.stderr.resume();
@@ -108,8 +123,9 @@ export class CopilotServerManager {
       void cancelled.catch(() => {});
       child.once("exit", () => { exited = true; if (session) session.exited = true; resolveExit(); });
       const fail = () => { if (session) this.failed(session, generation); };
-      child.on("error", fail);
-      child.on("exit", fail);
+      child.on("error", () => { if (!session?.failed) eventFailure = "spawn"; fail(); });
+      child.on("exit", () => { if (session && !session.failed) eventFailure ??= "spawn"; fail(); });
+      stage = "transport";
       let rpc: MessageConnection;
       try { rpc = this.host.connect(child); }
       catch {
@@ -118,14 +134,18 @@ export class CopilotServerManager {
       }
       session = { child, rpc, ready: false, failed: false, exited: false, exit, cancel, cancelled };
       this.session = session;
-      rpc.onClose(fail);
-      rpc.onError(fail);
+      const transportFailed = () => { eventFailure ??= "transport"; fail(); };
+      rpc.onClose(transportFailed);
+      rpc.onError(transportFailed);
       rpc.onRequest("workspace/configuration", (params: { items: { section?: string }[] }) =>
         params.items.map(item => item.section === "telemetry" ? { telemetryLevel: "off" }
           : item.section === "telemetry.telemetryLevel" ? "off" : null));
+      stage = "clientHandlers";
       session.releaseClient = this.options.configureConnection?.(rpc);
+      stage = "transport";
       rpc.listen();
       const workspaceUri = pathToFileURL(this.options.vaultPath).href;
+      stage = "initialize";
       await deadline(Promise.race([rpc.sendRequest("initialize", {
         processId: process.pid,
         workspaceFolders: [{ uri: workspaceUri, name: basename(this.options.vaultPath) }],
@@ -141,13 +161,19 @@ export class CopilotServerManager {
       if (!this.current(generation) || session.failed) throw new Error("Server startup cancelled.");
       await deadline(Promise.race([rpc.sendNotification("initialized", {}), cancelled]), this.host.initializeTimeoutMs);
       if (!this.current(generation) || session.failed) throw new Error("Server startup cancelled.");
+      stage = "configuration";
       await deadline(Promise.race([rpc.sendNotification("workspace/didChangeConfiguration", { settings: { telemetry: { telemetryLevel: "off" } } }), cancelled]), this.host.initializeTimeoutMs);
       if (!this.current(generation) || session.failed) throw new Error("Server startup cancelled.");
       session.ready = true;
+      stage = "readyCallback";
       this.options.onReady?.();
-    } catch {
+    } catch (error) {
+      // Only locally defined messages cross the integration boundary, never exception text.
+      const message = stage === "discovery" && error instanceof DiscoveryError
+        ? discoveryMessages[error.code] ?? startupMessages.discovery
+        : startupMessages[eventFailure ?? stage];
       if (session) await this.dispose(session, false);
-      if (this.current(generation)) this.options.onFailure("Copilot server unavailable. Check Node path and the global @github/copilot-language-server installation.");
+      if (this.current(generation)) this.options.onFailure(message);
     }
   }
 

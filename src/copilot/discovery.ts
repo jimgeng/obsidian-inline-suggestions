@@ -5,6 +5,32 @@ import * as path from "node:path";
 
 export interface ServerPaths { node: string; server: string }
 
+export const discoveryMessages = {
+  invalid_node_path: "Node path must be an absolute path to the Node executable.",
+  node_not_found: "Node.js was not found. Install Node.js or set Node path in plugin settings.",
+  node_probe_failed: "Node.js could not be run. Check the Node installation and executable permissions.",
+  node_version: "Copilot requires Node.js 20.8 or newer.",
+  node_resolution_failed: "The Node executable could not be resolved. Check the Node installation.",
+  npm_not_found: "npm was not found alongside Node.js or on PATH.",
+  npm_probe_failed: "npm could not be run. Check the npm installation.",
+  npm_root_invalid: "npm did not return a global package directory.",
+  server_not_found: "Copilot language server was not found. Run npm i -g @github/copilot-language-server.",
+} as const;
+
+export type DiscoveryErrorCode = keyof typeof discoveryMessages;
+
+export class DiscoveryError extends Error {
+  constructor(readonly code: DiscoveryErrorCode) {
+    super(discoveryMessages[code]);
+    this.name = "DiscoveryError";
+  }
+}
+
+async function probe<T>(code: DiscoveryErrorCode, run: () => Promise<T>): Promise<T> {
+  try { return await run(); }
+  catch { throw new DiscoveryError(code); }
+}
+
 // Never execute npm.cmd through a shell. Run npm's JS entry point with the
 // selected Node instead, so paths containing spaces need no quoting.
 export interface DiscoveryHost {
@@ -36,20 +62,20 @@ export async function discoverServer(nodeOverride = "", io: DiscoveryHost = host
   const directories = io.path.split(io.platform === "win32" ? ";" : ":").filter(Boolean)
     .map(directory => directory.replace(/^"(.*)"$/, "$1"));
   let node = nodeOverride.trim();
-  if (node && !p.isAbsolute(node)) throw new Error("Node path must be an absolute path to the Node executable.");
+  if (node && !p.isAbsolute(node)) throw new DiscoveryError("invalid_node_path");
   if (!node) {
     for (const directory of directories) {
       const candidate = p.join(directory, io.platform === "win32" ? "node.exe" : "node");
-      if (await io.executable(candidate)) { node = candidate; break; }
+      if (await probe("node_not_found", () => io.executable(candidate))) { node = candidate; break; }
     }
   }
-  if (!node || !await io.executable(node)) throw new Error("Node.js was not found. Install Node.js or set Node path in plugin settings.");
-  const version = await io.run(node, ["--version"]);
+  if (!node || !await probe("node_not_found", () => io.executable(node))) throw new DiscoveryError("node_not_found");
+  const version = await probe("node_probe_failed", () => io.run(node, ["--version"]));
   const match = /^v(\d+)\.(\d+)\./.exec(version);
   if (!match || Number(match[1]) < 20 || (Number(match[1]) === 20 && Number(match[2]) < 8)) {
-    throw new Error("Copilot requires Node.js 20.8 or newer.");
+    throw new DiscoveryError("node_version");
   }
-  const resolvedNode = await io.realpath(node);
+  const resolvedNode = await probe("node_resolution_failed", () => io.realpath(node));
   const npmCandidates = [
     p.join(p.dirname(resolvedNode), "node_modules/npm/bin/npm-cli.js"),
     p.join(p.dirname(resolvedNode), "../lib/node_modules/npm/bin/npm-cli.js"),
@@ -65,11 +91,12 @@ export async function discoverServer(nodeOverride = "", io: DiscoveryHost = host
   for (const candidate of npmCandidates) {
     try { npm = await io.realpath(candidate); break; } catch { /* Not installed here. */ }
   }
-  if (!npm) throw new Error("npm was not found alongside Node.js or on PATH.");
-  const root = (await io.run(node, [npm, "root", "-g"])).trim();
-  if (!p.isAbsolute(root)) throw new Error("npm did not return a global package directory.");
+  if (!npm) throw new DiscoveryError("npm_not_found");
+  const npmPath = npm;
+  const root = (await probe("npm_probe_failed", () => io.run(node, [npmPath, "root", "-g"]))).trim();
+  if (!p.isAbsolute(root)) throw new DiscoveryError("npm_root_invalid");
   const server = p.join(root, "@github/copilot-language-server/dist/language-server.js");
   try { await io.realpath(server); }
-  catch { throw new Error("Copilot language server was not found. Run npm i -g @github/copilot-language-server."); }
+  catch { throw new DiscoveryError("server_not_found"); }
   return { node: resolvedNode, server };
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, it } from "mocha";
 import { createMessageConnection, MessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node";
-import { CopilotAuth, CopilotStatus } from "../src/copilot/auth";
+import { AuthTimeouts, CopilotAuth, CopilotStatus } from "../src/copilot/auth";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
@@ -13,7 +13,7 @@ async function until(predicate: () => boolean): Promise<void> {
   }
   assert.fail("Timed out waiting for authentication event");
 }
-function fixture(resetSession: () => Promise<void> = async () => {}, openUrl?: (url: string) => Promise<void>) {
+function fixture(resetSession: () => Promise<void> = async () => {}, openUrl?: (url: string) => Promise<void>, timeouts?: AuthTimeouts) {
   const a = new PassThrough(), b = new PassThrough();
   const rpc = createMessageConnection(new StreamMessageReader(a), new StreamMessageWriter(b));
   const peer = createMessageConnection(new StreamMessageReader(b), new StreamMessageWriter(a));
@@ -32,7 +32,7 @@ function fixture(resetSession: () => Promise<void> = async () => {}, openUrl?: (
       const current = modal;
       return { close: () => { current.closed = true; cancel(); } };
     },
-  });
+  }, timeouts);
   const detach = auth.attach(rpc);
   peer.onRequest("signIn", () => {
     calls.push({ method: "signIn" });
@@ -356,6 +356,111 @@ describe("Copilot authentication (mock server, real JSON-RPC connection)", () =>
     f.detach();
     assert.equal(f.auth.state.status, undefined);
     assert.equal(f.auth.state.authentication, "unknown");
+  });
+
+  for (const method of ["signIn", "signOut"] as const) {
+    it(`times out ignored ${method}, retires the session and rejects late authentication`, async () => {
+      let resets = 0, release!: (value: unknown) => void;
+      const f = fixture(async () => { resets++; }, undefined, { rpcMs: 25, deviceAuthorizationMs: 100 });
+      await f.peer.sendNotification("didChangeStatus", { kind: "Normal" });
+      await until(() => f.auth.canComplete);
+      f.peer.onRequest(method, () => new Promise(resolve => { release = resolve; }));
+      await f.auth[method]();
+      await until(() => resets === 1 && !f.auth.state.pending);
+      assert.equal(f.auth.state.pending, false);
+      assert.equal(f.auth.state.available, false);
+      assert.equal(f.auth.canComplete, false);
+      assert.equal(f.auth.state.authentication, "unknown");
+      release({ status: "AlreadySignedIn", userCode: "SECRET" });
+      await f.peer.sendNotification("didChangeStatus", { kind: "Normal" });
+      // Round trip ensures the stale status and response have been delivered.
+      await f.peer.sendRequest("window/showDocument", { uri: "https://github.com/" });
+      assert.equal(f.auth.canComplete, false);
+      assert.equal(f.modal, undefined);
+      assert.equal(f.notices.length, 1);
+      assert.ok(f.notices.every(message => !message.includes("SECRET")));
+      await f.auth.signIn();
+      assert.equal(f.modal, undefined);
+      const replacement = fixture();
+      cleanups.push(f.auth.attach(replacement.rpc));
+      await f.auth.signIn();
+      assert.equal(replacement.calls.at(-1)?.method, "signIn");
+      assert.equal(f.auth.state.pending, true);
+    });
+
+    it(`settles ignored ${method} locally on disconnect without waiting for its deadline`, async () => {
+      const f = fixture(undefined, undefined, { rpcMs: 60_000, deviceAuthorizationMs: 60_000 });
+      let started = false, settled = false;
+      f.peer.onRequest(method, () => { started = true; return new Promise(() => {}); });
+      const pending = f.auth[method]().then(() => { settled = true; });
+      await until(() => started);
+      f.detach();
+      await until(() => settled);
+      await pending;
+      assert.equal(f.auth.state.pending, false);
+      assert.deepEqual(f.notices, []);
+    });
+  }
+
+  for (const proceed of [false, true]) {
+    it(`bounds the device phase ${proceed ? "while executing an ignored request" : "while waiting at the modal"}`, async () => {
+      let resets = 0, started = false;
+      const f = fixture(async () => { resets++; }, undefined, { rpcMs: 100, deviceAuthorizationMs: 25 });
+      f.peer.onRequest("workspace/executeCommand", () => {
+        started = true;
+        return new Promise(() => {});
+      });
+      await f.auth.signIn();
+      if (proceed) f.modal!.proceed();
+      await until(() => resets === 1 && !f.auth.state.pending);
+      assert.equal(started, proceed);
+      assert.equal(f.modal!.closed, true);
+      assert.equal(f.auth.state.available, false);
+      assert.equal(f.auth.canComplete, false);
+      assert.deepEqual(f.notices, ["Copilot sign-in failed or expired. Please try again."]);
+    });
+  }
+
+  it("settles an ignored initial sign-in locally when sign-out supersedes it", async () => {
+    let resets = 0, started = false, settled = false;
+    const f = fixture(async () => { resets++; }, undefined, { rpcMs: 60_000, deviceAuthorizationMs: 60_000 });
+    f.peer.onRequest("signIn", () => { started = true; return new Promise(() => {}); });
+    const signingIn = f.auth.signIn().then(() => { settled = true; });
+    await until(() => started);
+    await f.auth.signOut();
+    await until(() => settled);
+    await signingIn;
+    assert.equal(resets, 1);
+    assert.equal(f.auth.state.pending, false);
+    assert.equal(f.auth.state.authentication, "signed-out");
+    assert.deepEqual(f.notices, ["Signed out of Copilot."]);
+  });
+
+  it("clears deadlines after success, cancellation and disconnect", async () => {
+    let resets = 0;
+    const f = fixture(async () => { resets++; }, undefined, { rpcMs: 25, deviceAuthorizationMs: 25 });
+    f.peer.onRequest("signIn", () => ({ status: "AlreadySignedIn" }));
+    await f.auth.signIn();
+    await f.auth.signOut();
+    f.peer.onRequest("signIn", () => ({ userCode: "CODE", command: { command: "finish" } }));
+    await f.auth.signIn();
+    f.modal!.cancel();
+    await f.auth.signIn();
+    f.detach();
+    const notices = [...f.notices];
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(resets, 1);
+    assert.deepEqual(f.notices, notices);
+  });
+
+  it("stays fail closed if timeout recovery fails", async () => {
+    const f = fixture(async () => { throw new Error("SECRET"); }, undefined, { rpcMs: 20, deviceAuthorizationMs: 20 });
+    f.peer.onRequest("signOut", () => new Promise(() => {}));
+    await f.auth.signOut();
+    await until(() => !f.auth.state.pending);
+    assert.equal(f.auth.state.available, false);
+    assert.equal(f.auth.canComplete, false);
+    assert.ok(f.notices.every(message => !message.includes("SECRET")));
   });
 
   it("coalesces repeated sign-in commands", async () => {

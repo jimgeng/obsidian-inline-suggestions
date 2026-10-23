@@ -1,4 +1,4 @@
-import { EditorState, Extension, Prec, Transaction } from "@codemirror/state";
+import { Extension, Prec, Transaction } from "@codemirror/state";
 import { EditorView, keymap, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { CompletionController } from "./completion-controller";
 import { createCompletionContext } from "./completion-context";
@@ -9,23 +9,23 @@ interface EditorProvider extends CompletionProvider { close?(): Promise<void> }
 interface Options {
   readonly provider: EditorProvider;
   readonly enabled: () => boolean;
+  readonly isMarkdownEditor: (view: EditorView) => boolean;
 }
 
-let editorInfoField: unknown;
-export function setCompletionEditorInfoField(field: unknown): void { editorInfoField = field; }
-export function createCompletionExtension(provider: CompletionProvider): Extension {
-  return createCompletionIntegration(() => provider).extension;
+export function createCompletionExtension(provider: CompletionProvider, isMarkdownEditor: (view: EditorView) => boolean): Extension {
+  return createCompletionIntegration(() => provider, isMarkdownEditor).extension;
 }
 
 /** Owns every registered editor, including background panes and in-flight demos. */
 export function createCompletionIntegration(
   provider: (view: EditorView) => EditorProvider,
+  isMarkdownEditor: (view: EditorView) => boolean,
   enabled: () => boolean = () => true,
 ) {
   const editors = new Map<EditorView, AutomaticCompletion>();
   let disposed = false;
   const plugin = ViewPlugin.define(view => {
-    const editor = new AutomaticCompletion(view, { provider: provider(view), enabled: () => !disposed && enabled() });
+    const editor = new AutomaticCompletion(view, { provider: provider(view), isMarkdownEditor, enabled: () => !disposed && enabled() });
     editors.set(view, editor);
     return { update: (update: ViewUpdate) => editor.update(update), destroy: () => {
       editor.destroy(); editors.delete(view);
@@ -104,12 +104,8 @@ class AutomaticCompletion {
   private eligible(automatic = true): boolean {
     const state = this.view.state;
     if (this.disposed || (automatic && !this.options.enabled()) || !this.view.hasFocus || this.view.compositionStarted || this.composing || state.readOnly ||
-        state.selection.ranges.length !== 1 || !state.selection.main.empty || !editorInfoField) return false;
-    try {
-      const info = (state as EditorState & { field(field: unknown, require?: boolean): unknown }).field(editorInfoField, false);
-      const file = (info as { file?: { path?: unknown } } | undefined)?.file;
-      return typeof file?.path === "string" && file.path.toLowerCase().endsWith(".md");
-    } catch { return false; }
+        state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
+    return this.options.isMarkdownEditor(this.view);
   }
 
   private schedule(): void {

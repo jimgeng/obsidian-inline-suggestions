@@ -194,6 +194,24 @@ describe("Copilot completion provider (real JSON-RPC, mock server)", () => {
     assert.equal(second.calls[0]!.params.textDocument.text, "abc");
     await provider.close();
   });
+  it("invalidates a completion as soon as a newer sync starts, even when its write blocks", async () => {
+    const f = fixture();
+    let respond!: (value: unknown) => void;
+    f.peer.onRequest("textDocument/inlineCompletion", () => new Promise(resolve => { respond = resolve; }));
+    const pending = f.provider.complete({ prefix: "a", suffix: "" }, signal());
+    await until(() => !!respond);
+    const original = f.rpc.sendNotification.bind(f.rpc);
+    let release!: () => void;
+    f.rpc.sendNotification = ((method: string, ...args: unknown[]) => method === "textDocument/didChange"
+      ? new Promise<void>(resolve => { release = resolve; }) : (original as any)(method, ...args)) as typeof f.rpc.sendNotification;
+    const sync = f.provider.sync({ prefix: "b", suffix: "" });
+    await until(() => !!release);
+    respond({ items: [{ insertText: "stale", range: { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } } }] });
+    assert.equal(await pending, null);
+    release(); await sync;
+    await f.provider.close();
+  });
+
   it("ignores a response after an independent document change", async () => {
     const f = fixture();
     let release!: (value: unknown) => void;
@@ -204,6 +222,89 @@ describe("Copilot completion provider (real JSON-RPC, mock server)", () => {
     release({ items: [{ insertText: "stale", range: { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } } }] });
     assert.equal(await result, null);
   });
+  for (const method of ["textDocument/didOpen", "textDocument/didChange", "textDocument/didFocus", "textDocument/didClose"]) {
+    it(`retires a blocked ${method} write and recovers only on a replacement connection`, async () => {
+      const first = fixture(), second = fixture();
+      let connection = first.rpc;
+      let stalled = 0;
+      const provider = new CopilotCompletionProvider(() => connection, () => ({ tabSize: 2, insertSpaces: true }),
+        () => true, { writeTimeoutMs: 20, onStalled: rpc => { assert.equal(rpc, first.rpc); stalled++; } });
+      if (method !== "textDocument/didOpen") await provider.complete({ prefix: "a", suffix: "" }, signal());
+      const original = first.rpc.sendNotification.bind(first.rpc);
+      let release!: () => void;
+      first.rpc.sendNotification = ((name: string, ...args: unknown[]) => name === method
+        ? new Promise<void>(resolve => { release = resolve; }) : (original as any)(name, ...args)) as typeof first.rpc.sendNotification;
+      if (method === "textDocument/didClose") await provider.close();
+      else assert.equal(await provider.complete({ prefix: "ab", suffix: "" }, signal()), null);
+      assert.equal(stalled, 1);
+      assert.equal(await provider.complete({ prefix: "not sent", suffix: "" }, signal()), null);
+      connection = second.rpc;
+      if (method !== "textDocument/didClose") {
+        assert.equal(await provider.complete({ prefix: "replacement", suffix: "" }, signal()), "next");
+        assert.equal(second.calls[0]!.params.textDocument.version, 1);
+        release(); // A late write must not overwrite the replacement session's document.
+        await provider.complete({ prefix: "replacement!", suffix: "" }, signal());
+        assert.equal(second.calls.find(call => call.method === "textDocument/didChange")!.params.textDocument.version, 2);
+      } else release();
+      await provider.close();
+    });
+  }
+
+  it("bypasses a blocked old connection immediately and skips superseded queued context", async () => {
+    const first = fixture(), second = fixture();
+    let connection = first.rpc;
+    const provider = new CopilotCompletionProvider(() => connection, () => ({ tabSize: 2, insertSpaces: true }));
+    const original = first.rpc.sendNotification.bind(first.rpc);
+    let release!: () => void;
+    first.rpc.sendNotification = ((method: string, ...args: unknown[]) => method === "textDocument/didOpen"
+      ? new Promise<void>(resolve => { release = resolve; }) : (original as any)(method, ...args)) as typeof first.rpc.sendNotification;
+    const old = provider.complete({ prefix: "old", suffix: "" }, signal());
+    await until(() => !!release);
+    const superseded = provider.complete({ prefix: "must not send", suffix: "" }, signal());
+    const latest = provider.complete({ prefix: "latest", suffix: "" }, signal());
+    connection = second.rpc;
+    assert.equal(await provider.complete({ prefix: "new connection", suffix: "" }, signal()), "next");
+    assert.deepEqual(await Promise.all([old, superseded, latest]), [null, null, null]);
+    release();
+    await provider.close();
+    assert.equal(first.calls.some(call => call.params?.textDocument?.text === "must not send"), false);
+    assert.equal(second.calls[0]!.params.textDocument.text, "new connection");
+  });
+
+  it("preserves write order while dropping stale work behind a blocked write", async () => {
+    const f = fixture();
+    const original = f.rpc.sendNotification.bind(f.rpc);
+    let release!: () => void;
+    f.rpc.sendNotification = ((method: string, ...args: unknown[]) => method === "textDocument/didOpen"
+      ? new Promise<void>(resolve => { release = () => { void (original as any)(method, ...args).then(resolve); }; })
+      : (original as any)(method, ...args)) as typeof f.rpc.sendNotification;
+    const first = f.provider.complete({ prefix: "first", suffix: "" }, signal());
+    await until(() => !!release);
+    const stale = f.provider.complete({ prefix: "stale", suffix: "" }, signal());
+    const latest = f.provider.complete({ prefix: "latest", suffix: "" }, signal());
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(f.calls.length, 0);
+    release();
+    assert.deepEqual(await Promise.all([first, stale, latest]), [null, null, "next"]);
+    const changes = f.calls.filter(call => call.method === "textDocument/didChange");
+    assert.equal(changes.length, 1);
+    assert.equal(changes[0]!.params.textDocument.version, 2);
+    // The unchanged suffix "st" is retained by the incremental replacement.
+    assert.equal(changes[0]!.params.contentChanges[0].text, "late");
+    await f.provider.close();
+  });
+
+  it("skips cancelled queued document context without retiring a healthy connection", async () => {
+    const f = fixture();
+    const pending = f.provider.complete({ prefix: "cancelled", suffix: "" }, signal());
+    const latest = f.provider.complete({ prefix: "latest", suffix: "" }, signal());
+    assert.equal(await pending, null);
+    assert.equal(await latest, "next");
+    assert.equal(f.calls.filter(call => call.method === "textDocument/didOpen").length, 1);
+    assert.equal(f.calls[0]!.params.textDocument.text, "latest");
+    await f.provider.close();
+  });
+
   it("normalizes document newlines and avoids splitting changed surrogate pairs", async () => {
     const f = fixture();
     await f.provider.complete({ prefix: "a\r\n😀", suffix: "" }, signal());
